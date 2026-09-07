@@ -17,6 +17,29 @@ terminus/
 │   │   └── transforms.py        # Dedicated solvers for Fourier, Laplace, and Z-transforms
 │   │
 │   ├── dynamic_systems/         # (Simulink-like)
+|   |   Engines/Dynamic_System/
+|   ├── base.py                   # Base Block class, state vectors, derivative & discrete interfaces
+|   ├── continuous.py             # Integrators, State-Space, Descriptor SS, TF, Zero-Pole, Delays, PID 2DOF
+    ├──discrete.py               # Unit Delay, FIR/IIR Filters, Direct Form II, Discrete Integrators, Tapped Delays
+    ├── discontinuities.py        # Saturation, Rate Limiter, Dead Zone, Backlash, Relay, Coulomb Friction, PWM
+    ├── logic_bit.py              # Logic ops, Relational, Bit Set/Clear, Bit-Int conversions, Edge detectors
+    ├── math_ops.py               # Gain, Sum, Product, Divide, Dot, Rounding, Trig, Complex, Polynomial, MinMax
+    ├── matrix_ops.py             # Matrix math, Diagonals, Transpose, Hermitian, Cross Product, Subsystems
+    ├── lookup_tables.py          # 1D, 2D, n-D, Dynamic, Prelookup, Interpolation, Sine table
+    ├── sources.py                # Step, Ramp, Sine, Chirp, Clocks, Pulse, Noise, Random, Counters, Workspace
+    ├── sinks.py                  # Scope, Display, Terminator, ToWorkspace, ToFile, StopSimulation
+    ├── routing.py                # Mux, Demux, Buses, Switches, Goto, From, Data Stores, Variants
+    ├── signal_attributes.py      # IC, DataTypeConversion, Probes, Width, RateTransition, UnitConversion
+    ├── model_verification.py     # Assertions, Static/Dynamic Range & Gap checkers, Gradient & Resolution checks
+    ├── strings.py                # String Constant, Compare, Concat, Find, Count, Length, Substring, Conversions
+    ├── user_functions.py         # Fcn (math expressions), MATLAB/Python function callables, S-Functions, C Callers
+    ├── ports_subsystems.py       # Inport, Outport, Enabled/Triggered Subsystems, Iterators, If/Switch-Case
+    ├── dashboard.py              # Sliders, Knobs, Rotary/Toggle Switches, Push Buttons, Gauges, Lamps
+    ├── messages_events.py        # Queues, Send, Receive, Message Merge, Hit Scheduler, Sequence Viewer
+    ├── model_utilities.py        # DocBlock, ModelInfo, Linearization snapshot utilities
+    ├── blocks.py                 # Master re-export aggregator
+    └── __init__.py               # Dynamic System Engine package entrypoint
+
 │   │   ├── blocks.py            # Definitions for integrators, scopes, and PID controllers
 │   │   ├── scheduler.py         # Directed Acyclic Graph (DAG) for execution order
 │   │   └── ode_solver.py        # Runge-Kutta (RK4) engine for stepping through time
