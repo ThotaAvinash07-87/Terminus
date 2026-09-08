@@ -76,31 +76,42 @@ class SystemDiagram:
     def get_block(self, name: str) -> Optional[Block]:
         return self.blocks.get(name.upper().strip())
 
-    def connect(self, src_endpoint: str, dst_endpoint: str) -> None:
+    def connect(self, src: Union[str, Tuple[str, int]], *args) -> None:
         """Connects source output port to destination input port.
         
-        Example: connect("Step1.0", "Sum1.0") or connect("Plant.out", "Scope1.in")
+        Supports:
+        - connect("Step1.0", "Sum1.0")
+        - connect("Step1", 0, "Sum1", 0)
+        - connect("Step1", "Sum1")
         """
-        def parse_port(ep: str, is_src: bool) -> Tuple[str, int]:
-            parts = ep.strip().split(".")
-            bname = parts[0].upper()
-            port = 0
-            if len(parts) > 1:
-                p_str = parts[1].lower()
-                if p_str.isdigit():
-                    port = int(p_str)
-                elif p_str in ("out", "y", "output"):
-                    port = 0
-                elif p_str in ("in", "u", "input"):
-                    port = 0
-                elif p_str.startswith("in") and p_str[2:].isdigit():
-                    port = int(p_str[2:])
-                elif p_str.startswith("out") and p_str[3:].isdigit():
-                    port = int(p_str[3:])
-            return bname, port
+        if len(args) == 3:
+            src_b = str(src).upper()
+            src_p = int(args[0])
+            dst_b = str(args[1]).upper()
+            dst_p = int(args[2])
+        elif len(args) == 1:
+            def parse_port(ep: str, is_src: bool) -> Tuple[str, int]:
+                parts = str(ep).strip().split(".")
+                bname = parts[0].upper()
+                port = 0
+                if len(parts) > 1:
+                    p_str = parts[1].lower()
+                    if p_str.isdigit():
+                        port = int(p_str)
+                    elif p_str in ("out", "y", "output"):
+                        port = 0
+                    elif p_str in ("in", "u", "input"):
+                        port = 0
+                    elif p_str.startswith("in") and p_str[2:].isdigit():
+                        port = int(p_str[2:])
+                    elif p_str.startswith("out") and p_str[3:].isdigit():
+                        port = int(p_str[3:])
+                return bname, port
 
-        src_b, src_p = parse_port(src_endpoint, is_src=True)
-        dst_b, dst_p = parse_port(dst_endpoint, is_src=False)
+            src_b, src_p = parse_port(src, is_src=True)
+            dst_b, dst_p = parse_port(args[0], is_src=False)
+        else:
+            raise ValueError("Usage: connect(src_endpoint, dst_endpoint) or connect(src_b, src_p, dst_b, dst_p)")
 
         if src_b not in self.blocks:
             raise KeyError(f"Source block '{src_b}' does not exist.")

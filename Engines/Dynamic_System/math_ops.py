@@ -12,9 +12,10 @@ from .base import Block
 class GainBlock(Block):
     """Proportional Gain: y = K * u."""
 
-    def __init__(self, name: str, gain: Union[str, float] = 1.0):
+    def __init__(self, name: str, gain: Union[str, float] = 1.0, k: Optional[Union[str, float]] = None):
         super().__init__(name, num_inputs=1, num_outputs=1)
-        self.gain = parse_eng_unit(gain)
+        actual_gain = k if k is not None else gain
+        self.gain = parse_eng_unit(actual_gain)
         self.direct_feedthrough = True
 
     def compute_output(self, t: float) -> List[float]:

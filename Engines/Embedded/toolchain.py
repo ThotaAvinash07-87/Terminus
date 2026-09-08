@@ -99,16 +99,24 @@ class Disassembler:
     """Formats instruction objects back into formatted assembly strings."""
 
     @classmethod
-    def disassemble(cls, instructions: List[Instruction], pc_highlight: int = -1) -> str:
+    def disassemble(cls, instructions: List[Any], pc_highlight: int = -1) -> str:
         lines: List[str] = []
         for i, inst in enumerate(instructions):
             prefix = "► " if i == pc_highlight else "  "
-            label_str = f"{inst.label + ':':<10}" if inst.label else " " * 10
-            operands = []
-            if inst.op1:
-                operands.append(inst.op1)
-            if inst.op2:
-                operands.append(inst.op2)
-            op_str = ", ".join(operands)
-            lines.append(f"{prefix}0x{i:04X}: {label_str} {inst.opcode:<6} {op_str}")
+            if hasattr(inst, "opcode"):
+                opcode = inst.opcode
+                label_str = f"{inst.label + ':':<10}" if getattr(inst, "label", None) else " " * 10
+                operands = []
+                if getattr(inst, "op1", None):
+                    operands.append(str(inst.op1))
+                if getattr(inst, "op2", None):
+                    operands.append(str(inst.op2))
+                op_str = ", ".join(operands)
+                lines.append(f"{prefix}0x{i:04X}: {label_str} {opcode:<6} {op_str}")
+            elif isinstance(inst, (tuple, list)):
+                op_code = f"OP_{inst[0]}" if isinstance(inst[0], int) else str(inst[0])
+                ops = [str(x) for x in inst[1:] if x is not None]
+                lines.append(f"{prefix}0x{i:04X}: {' ' * 10} {op_code:<6} {', '.join(ops)}")
+            else:
+                lines.append(f"{prefix}0x{i:04X}: {' ' * 10} {str(inst)}")
         return "\n".join(lines)

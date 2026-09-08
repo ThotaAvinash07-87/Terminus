@@ -13,8 +13,13 @@ from textual.widgets import Header, Footer, Input, RichLog, Static
 
 from CORE.common_math import parse_eng_unit, format_eng_unit, Waveform, SignalMetrics, split_smart_statements
 from CORE.ascii_canvas import AsciiCanvas, AsciiPlotter, AsciiBodePlotter, SchematicVisualizer
-from CORE.ipc_router import IPCRouter, IPCClient, TerminalSessionInfo, ipc_router_instance, ipc_client_instance
+from CORE.ipc_router import (
+    IPCRouter, IPCClient, TerminalSessionInfo, CrossModeSignalValidator,
+    CrossModeValidationResult, ipc_router_instance, ipc_client_instance
+)
 from CORE.storage_manager import StorageManager
+from CORE.lib_importer import CustomModelImporter, MCUSpecification
+from CORE.universal_exporter import UniversalStandardExporter
 
 from Engines.Circuit.components import (
     Component, Resistor, Capacitor, Inductor, CoupledInductors,
@@ -179,10 +184,15 @@ class TerminusEngineBridge:
         if first == "file":
             return self._handle_file_command(line, split_smart_args(line))
 
+        if first in ("import", "include"):
+            return self._handle_import_command(line, tokens)
+
         if first == "export":
             return self._cmd_export(tokens[1:])
 
-        if first == "session":
+        if first in ("session", "room", "team"):
+            if first in ("room", "team"):
+                return self._handle_session_command(f"session room {' '.join(tokens[1:])}", ["session", "room"] + tokens[1:])
             return self._handle_session_command(line, tokens)
 
         if first == "ipc":
@@ -475,32 +485,190 @@ class TerminusEngineBridge:
         ]
         return "\n".join(lines)
 
-    def _cmd_export(self, args: List[str]) -> str:
-        out_name = "export_simulation"
-        fmt = "csv"
-        for a in args:
-            if a.startswith("--format="):
-                fmt = a.split("=")[1].lower()
-            elif not a.startswith("-"):
-                out_name = a
+    def _handle_import_command(self, line: str, tokens: List[str]) -> str:
+        """Imports custom SPICE .lib/.mod models or microcontroller .lib/.txt specifications."""
+        from pathlib import Path
+        if len(tokens) < 2:
+            return (
+                "[bold cyan]=== Custom Component & MCU Model Importer ===[/bold cyan]\n"
+                "  import <filepath>            - Import SPICE .lib/.mod file or MCU .lib/.txt specification\n"
+                "  import spice <filepath>      - Import custom SPICE models/subcircuits into component catalog\n"
+                "  import mcu <filepath>        - Import microcontroller characteristics into MCU engine\n"
+            )
 
+        file_path_arg = tokens[-1].strip('"\'')
+        if tokens[1].lower() in ("spice", "lib", "mcu") and len(tokens) >= 3:
+            file_path_arg = tokens[2].strip('"\'')
+
+        target_path = Path(file_path_arg)
+        if not target_path.exists():
+            mode_p = self.storage.get_mode_dir(self.mode) / file_path_arg
+            if mode_p.exists():
+                target_path = mode_p
+            else:
+                root_p = self.storage.base_dir / file_path_arg
+                if root_p.exists():
+                    target_path = root_p
+                else:
+                    raise FileNotFoundError(f"Import file '{file_path_arg}' not found on disk.")
+
+        models_count, subckts_count, mcu_spec = CustomModelImporter.import_file(str(target_path), circuit_catalog)
+        lines = [
+            f"[bold green]Successfully imported model library:[/bold green] [bold]{target_path.name}[/bold]",
+            f"  * Source Path: {target_path}",
+        ]
+        if models_count > 0:
+            lines.append(f"  * SPICE Models Registered: [bold cyan]{models_count}[/bold cyan]")
+        if subckts_count > 0:
+            lines.append(f"  * SPICE Subcircuits Registered: [bold cyan]{subckts_count}[/bold cyan]")
+        if mcu_spec:
+            lines.append(f"  * MCU Hardware Specification: [bold yellow]{mcu_spec.name}[/bold yellow] ({mcu_spec.architecture})")
+            lines.append(f"    - Clock: {mcu_spec.clock_freq_mhz} MHz | Flash: {mcu_spec.flash_kb} KB | SRAM: {mcu_spec.sram_kb} KB")
+            lines.append(f"    - ADC: {mcu_spec.adc_channels} Channels ({mcu_spec.adc_resolution_bits}-bit, {mcu_spec.adc_input_range[0]}V..{mcu_spec.adc_input_range[1]}V)")
+            lines.append(f"    - Peripherals: {mcu_spec.epwm_channels} ePWMs, {mcu_spec.gpio_count} GPIOs")
+            self.mcu.apply_specification(mcu_spec)
+            lines.append("  * [bold green]Applied hardware characteristics to MCU core.[/bold green]")
+
+        return "\n".join(lines)
+
+    def _cmd_export(self, args: List[str]) -> str:
+        """Universal industry-standard exporter for all Terminus modes."""
+        from pathlib import Path
+        if not args:
+            return (
+                "[bold cyan]=== Industry Standard Universal Exporter ===[/bold cyan]\n"
+                "  export ltspice [name]        - Export Circuit to LTspice .cir / .asc standard schematic\n"
+                "  export simulink [name]       - Export Dynamic System to MATLAB Simulink .m script\n"
+                "  export matlab [name]         - Export Numerical workspace / TF to MATLAB .m script\n"
+                "  export verilog [name]        - Export Digital Logic to IEEE 1364 Verilog HDL (.v)\n"
+                "  export vhdl [name]           - Export Digital Logic to IEEE 1076 VHDL (.vhd)\n"
+                "  export c [name]              - Export Embedded program to ANSI C/C++ firmware (.c)\n"
+                "  export hex [name]            - Export Embedded program to Intel HEX format (.hex)\n"
+                "  export asm [name]            - Export Embedded program to Assembly (.asm)\n"
+                "  export python [name]         - Export Numerical workspace to Python SciPy script (.py)\n"
+                "  export csv [name]            - Export last simulation traces to CSV\n"
+            )
+
+        target_fmt = args[0].lower()
+        out_name = args[1] if len(args) > 1 else ""
+
+        # 1. Circuit Exporters
+        if target_fmt in ("ltspice", "spice", "cir", "net"):
+            name = out_name or self.circuit_netlist.name or "circuit_export"
+            content = UniversalStandardExporter.export_circuit_ltspice_cir(self.circuit_netlist, name)
+            path = self.storage.save_file("EXPORTS", f"{name}.cir", content)
+            return (
+                f"[bold green]Exported Industry-Standard SPICE/LTspice Netlist:[/bold green] [bold]{path}[/bold]\n"
+                f"  * Compatibility: LTspice XVII/24, OrCAD PSpice, ngspice, Cadence Virtuoso\n"
+                f"  * Components: {len(self.circuit_netlist.components)} elements"
+            )
+
+        elif target_fmt in ("asc", "schematic"):
+            name = out_name or self.circuit_netlist.name or "schematic_export"
+            content = UniversalStandardExporter.export_circuit_ltspice_asc(self.circuit_netlist, name)
+            path = self.storage.save_file("EXPORTS", f"{name}.asc", content)
+            return (
+                f"[bold green]Exported LTspice Schematic File:[/bold green] [bold]{path}[/bold]\n"
+                f"  * Compatibility: Native LTspice Schematic Editor (.asc)\n"
+                f"  * Symbols Placed: {len(self.circuit_netlist.components)}"
+            )
+
+        # 2. Dynamic Systems Exporters
+        elif target_fmt in ("simulink", "slx", "mdl"):
+            name = out_name or self.dynamic_diagram.name or "simulink_model"
+            content = UniversalStandardExporter.export_dynamic_system_simulink_script(self.dynamic_diagram, name)
+            path = self.storage.save_file("EXPORTS", f"build_{name}_simulink.m", content)
+            return (
+                f"[bold green]Exported MATLAB Simulink Model Generator Script:[/bold green] [bold]{path}[/bold]\n"
+                f"  * Compatibility: MATLAB R2018b - R2024b+ (Simulink add_block / add_line API)\n"
+                f"  * Blocks: {len(self.dynamic_diagram.blocks)} | Signal Wires: {len(self.dynamic_diagram.connections)}\n"
+                f"  * Run in MATLAB: >> {Path(path).stem}"
+            )
+
+        # 3. Numerical Exporters
+        elif target_fmt in ("matlab", "m"):
+            name = out_name or "numerical_workspace"
+            content = UniversalStandardExporter.export_numerical_matlab_script(self.numerical_workspace, name)
+            path = self.storage.save_file("EXPORTS", f"{name}.m", content)
+            return (
+                f"[bold green]Exported MATLAB Script:[/bold green] [bold]{path}[/bold]\n"
+                f"  * Compatibility: Standard MATLAB / GNU Octave\n"
+                f"  * Variables: {len(self.numerical_workspace.variables)}"
+            )
+
+        elif target_fmt in ("python", "py", "scipy"):
+            name = out_name or "numerical_scipy"
+            content = UniversalStandardExporter.export_numerical_python_script(self.numerical_workspace, name)
+            path = self.storage.save_file("EXPORTS", f"{name}.py", content)
+            return f"[bold green]Exported Python SciPy Script:[/bold green] [bold]{path}[/bold]"
+
+        # 4. Digital Logic Exporters
+        elif target_fmt in ("verilog", "v", "hdl"):
+            name = out_name or "digital_module"
+            content = UniversalStandardExporter.export_digital_verilog(self.logic_circuit, name)
+            path = self.storage.save_file("EXPORTS", f"{name}.v", content)
+            return (
+                f"[bold green]Exported IEEE 1364-2005 Verilog HDL Module:[/bold green] [bold]{path}[/bold]\n"
+                f"  * Compatibility: AMD/Xilinx Vivado, Intel Quartus Prime, ModelSim, Synopsys Design Compiler\n"
+                f"  * Logic Gates: {len(self.logic_circuit.gates)}"
+            )
+
+        elif target_fmt in ("vhdl", "vhd"):
+            name = out_name or "digital_module"
+            content = UniversalStandardExporter.export_digital_vhdl(self.logic_circuit, name)
+            path = self.storage.save_file("EXPORTS", f"{name}.vhd", content)
+            return (
+                f"[bold green]Exported IEEE 1076 VHDL Entity/Architecture:[/bold green] [bold]{path}[/bold]\n"
+                f"  * Compatibility: Vivado, Quartus, GHDL, Synopsys\n"
+                f"  * Logic Elements: {len(self.logic_circuit.gates)}"
+            )
+
+        # 5. Embedded Firmware Exporters
+        elif target_fmt in ("c", "cpp", "firmware"):
+            name = out_name or "mcu_firmware"
+            content = UniversalStandardExporter.export_embedded_c_firmware(self.mcu, name)
+            path = self.storage.save_file("EXPORTS", f"{name}.c", content)
+            return (
+                f"[bold green]Exported ANSI C/C++ Embedded Firmware:[/bold green] [bold]{path}[/bold]\n"
+                f"  * Compatibility: GCC / Clang / TI Code Composer Studio / Keil MDK / IAR Embedded Workbench\n"
+                f"  * Program Words: {len(self.mcu.prog_mem)}"
+            )
+
+        elif target_fmt in ("hex", "ihex", "intel_hex"):
+            name = out_name or "firmware_image"
+            content = UniversalStandardExporter.export_embedded_intel_hex(self.mcu)
+            path = self.storage.save_file("EXPORTS", f"{name}.hex", content)
+            return (
+                f"[bold green]Exported Intel HEX Flash Memory Image:[/bold green] [bold]{path}[/bold]\n"
+                f"  * Compatibility: J-Link, ST-Link, OpenOCD, Flash Programmers\n"
+                f"  * Address Space: 0x0000 - 0x{len(self.mcu.prog_mem):04X}"
+            )
+
+        elif target_fmt in ("asm", "assembly", "s"):
+            name = out_name or "program"
+            content = UniversalStandardExporter.export_embedded_assembly(self.mcu)
+            path = self.storage.save_file("EXPORTS", f"{name}.asm", content)
+            return f"[bold green]Exported Assembly Source:[/bold green] [bold]{path}[/bold]"
+
+        # 6. Fallback: CSV Simulation export
+        name = target_fmt if target_fmt != "csv" else (out_name or "export_simulation")
         content = ""
         if self.mode == "DYNAMIC" and self.last_dynamic_sim:
             lines = [f"# TerminusECE Export - Dynamic System Simulation ({self.dynamic_diagram.name})"]
-            for name, wf in self.last_dynamic_sim.items():
-                lines.append(f"\n--- Scope: {name} ---")
+            for sname, wf in self.last_dynamic_sim.items():
+                lines.append(f"\n--- Scope: {sname} ---")
                 lines.append(wf.to_csv())
             content = "\n".join(lines)
         elif self.last_circuit_sim:
             lines = [f"# TerminusECE Export - {self.last_circuit_sim.sim_type}"]
-            for name, wf in self.last_circuit_sim.waveforms.items():
-                lines.append(f"\n--- {name} ---")
+            for sname, wf in self.last_circuit_sim.waveforms.items():
+                lines.append(f"\n--- {sname} ---")
                 lines.append(wf.to_csv())
             content = "\n".join(lines)
         else:
-            return "No simulation data available to export."
+            return "No simulation data available to export to CSV."
 
-        saved_path = self.storage.save_file("EXPORTS", f"{out_name}.{fmt}", content)
+        saved_path = self.storage.save_file("EXPORTS", f"{name}.csv", content)
         return f"[green]Exported simulation data to:[/green] [bold]{saved_path}[/bold]"
 
     def _cmd_ipc(self, args: List[str]) -> str:
@@ -511,13 +679,14 @@ class TerminusEngineBridge:
         if len(tokens) < 2:
             return (
                 "[bold cyan]=== Multi-Terminal Session Networking (500+ Terminals) ===[/bold cyan]\n"
-                "  session list / ls            - Discover and list all active terminals on LAN/network\n"
-                "  session info                 - View current session number, assigned IP:port, and linked signals\n"
+                "  session room <code_or_name>  - Join / set Team Room code across all devices\n"
+                "  session list / ls            - Discover and list active terminals on LAN/room\n"
+                "  session info                 - View current session number, room code, and linked signals\n"
                 "  session server start [port]  - Start high-capacity async IPC router server (defaults to 8765)\n"
                 "  session server stop          - Stop local IPC router server\n"
                 "  session connect <ip:port>    - Connect this terminal session to a network router\n"
                 "  session exec <id> <cmd>      - Remotely execute command on terminal Session #<id>\n"
-                "  session link <sig> <id>.<sig>- Bridge and live-stream signal from Session #<id>\n"
+                "  session link <sig> <id>.<sig>- Bridge and live-stream signal with cross-mode validation\n"
                 "  session push <sig> <val>     - Push signal value across network to all linked sessions\n"
                 "  session broadcast <msg>      - Broadcast message/variable across all terminals\n"
                 "  session limits / network     - Display architectural network capacity & scalability details\n"
@@ -525,8 +694,26 @@ class TerminusEngineBridge:
 
         sub = tokens[1].lower()
 
-        if sub in ("list", "ls"):
-            sessions = self.ipc_client.list_sessions_sync()
+        if sub in ("room", "team", "join"):
+            if len(tokens) < 3:
+                curr_room = getattr(self.ipc_client, "room_code", "DEFAULT")
+                return f"Current Team Room: [bold cyan]{curr_room}[/bold cyan]. Use 'session room <CODE>' to join/create a team room."
+            room_code = tokens[2].upper().strip()
+            res = self.ipc_client.join_room_sync(room_code)
+            members = res.get("members", [self.ipc_client.session_id])
+            return (
+                f"[bold green]Joined Team Room:[/bold green] [bold cyan]{room_code}[/bold cyan]\n"
+                f"Current Session #{self.ipc_client.session_id} is now linked in room '{room_code}'.\n"
+                f"Active Members in Room: {members}"
+            )
+
+        elif sub in ("list", "ls"):
+            room_filter = getattr(self.ipc_client, "room_code", "DEFAULT")
+            sessions = self.ipc_client.list_sessions_sync(room=room_filter)
+            if not sessions and room_filter != "DEFAULT":
+                # Fallback to all sessions if room is empty or unrouted
+                sessions = self.ipc_client.list_sessions_sync()
+
             if not sessions:
                 if not self.ipc_client.is_connected:
                     return (
@@ -534,21 +721,22 @@ class TerminusEngineBridge:
                         "To host a multi-terminal network on this computer: [bold]session server start[/bold]\n"
                         "To connect to an existing router: [bold]session connect 127.0.0.1:8765[/bold]"
                     )
-                return "[yellow]No other active sessions detected on network router.[/yellow]"
+                return f"[yellow]No other active sessions detected on network router (Room: {room_filter}).[/yellow]"
 
             lines = [
-                f"[bold cyan]=== Active Networked Terminal Sessions ({len(sessions)} Active / Max 500+) ===[/bold cyan]",
-                f"{'Session #':<11}{'Host / IP':<22}{'Mode':<14}{'Active File':<22}{'Uptime':<10}"
+                f"[bold cyan]=== Active Networked Terminal Sessions (Room: {room_filter} | {len(sessions)} Active / Max 500+) ===[/bold cyan]",
+                f"{'Session #':<11}{'Host / IP':<22}{'Mode':<14}{'Active File':<20}{'Room':<10}{'Uptime':<8}"
             ]
-            lines.append("-" * 79)
+            lines.append("-" * 85)
             for s in sessions:
                 sid = s.get("session_id", "?")
                 is_self = " (Current)" if sid == self.ipc_client.session_id else ""
                 host_ip = f"{s.get('hostname', 'host')}:{s.get('port', 0)}"
                 mode = s.get("mode", "Circuit")
                 active = s.get("active_file", "untitled")
+                s_room = s.get("room_code", "DEFAULT")
                 uptime = f"{time.time() - s.get('connected_at', time.time()):.0f}s"
-                lines.append(f"#{sid:<10}{host_ip:<22}{mode:<14}{active:<22}{uptime:<10}{is_self}")
+                lines.append(f"#{sid:<10}{host_ip:<22}{mode:<14}{active:<20}{s_room:<10}{uptime:<8}{is_self}")
             return "\n".join(lines)
 
         elif sub == "info":
@@ -557,6 +745,7 @@ class TerminusEngineBridge:
             lines = [
                 "[bold cyan]=== Current Terminal Session Network Profile ===[/bold cyan]",
                 f"Assigned Session Number: [bold green]Session #{self.ipc_client.session_id}[/bold green]",
+                f"Team Room Code         : [bold cyan]{getattr(self.ipc_client, 'room_code', 'DEFAULT')}[/bold cyan]",
                 f"Client UUID            : {self.ipc_client.client_uuid}",
                 f"Connected Router       : {self.ipc_client.host}:{self.ipc_client.port}",
                 f"Current Operating Mode : {self.mode}",
@@ -583,17 +772,18 @@ class TerminusEngineBridge:
 
         elif sub == "connect":
             if len(tokens) < 3:
-                raise ValueError("Usage: session connect <ip:port> [requested_session_id]")
+                raise ValueError("Usage: session connect <ip:port> [requested_session_id] [room_code]")
             endpoint = tokens[2]
-            req_id = int(tokens[3]) if len(tokens) > 3 else None
+            req_id = int(tokens[3]) if len(tokens) > 3 and tokens[3].isdigit() else None
+            room_c = tokens[4].upper() if len(tokens) > 4 else (tokens[3].upper() if len(tokens) > 3 and not tokens[3].isdigit() else "DEFAULT")
             host = endpoint.split(":")[0] if ":" in endpoint else endpoint
             port = int(endpoint.split(":")[1]) if ":" in endpoint else 8765
 
             self.ipc_client = IPCClient(host=host, port=port)
             self.ipc_client.set_command_executor(self.execute_command)
-            ok = self.ipc_client.connect(mode=self.mode, active_file=self.circuit_netlist.name, requested_session_id=req_id)
+            ok = self.ipc_client.connect(mode=self.mode, active_file=self.circuit_netlist.name, requested_session_id=req_id, room_code=room_c)
             if ok:
-                return f"[green]Successfully connected to {host}:{port}[/green] as [bold]Session #{self.ipc_client.session_id}[/bold] (UUID: {self.ipc_client.client_uuid[:8]})."
+                return f"[green]Successfully connected to {host}:{port}[/green] as [bold]Session #{self.ipc_client.session_id}[/bold] in Team Room '[bold cyan]{room_c}[/bold cyan]' (UUID: {self.ipc_client.client_uuid[:8]})."
             raise ConnectionError(f"Could not connect to IPC Router at {host}:{port}. Is the router server running?")
 
         elif sub == "exec":
@@ -616,7 +806,23 @@ class TerminusEngineBridge:
             tgt_sid_str, tgt_sig = target_spec.split(".", 1)
             tgt_sid = int(tgt_sid_str)
             res = self.ipc_client.link_signal_sync(local_sig, tgt_sid, tgt_sig)
-            return f"[green]Signal Link Established:[/green] Current Session #{self.ipc_client.session_id}:{local_sig} -> Session #{tgt_sid}:{tgt_sig}"
+            
+            val_info = res.get("validation", {})
+            v_status = val_info.get("status", "COMPATIBLE")
+            v_msg = val_info.get("message", "Semantic connection verified.")
+            v_adapter = val_info.get("adapter", "Direct 1:1 Signal Wire")
+            v_warnings = val_info.get("warnings", [])
+
+            color = "green" if v_status == "COMPATIBLE" else "yellow" if v_status == "VALID_WITH_ADAPTER" else "red"
+            lines = [
+                f"[bold green]Signal Link Established:[/bold green] Session #{self.ipc_client.session_id}:{local_sig} -> Session #{tgt_sid}:{tgt_sig}",
+                f"  * Validation Status : [bold {color}]{v_status}[/bold {color}]",
+                f"  * Semantic Handshake: {v_msg}",
+                f"  * Signal Adapter    : {v_adapter}",
+            ]
+            for w in v_warnings:
+                lines.append(f"  * [bold yellow]Limitation Warning[/bold yellow]: {w}")
+            return "\n".join(lines)
 
         elif sub == "push":
             if len(tokens) < 4:

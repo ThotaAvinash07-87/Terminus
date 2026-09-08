@@ -551,6 +551,8 @@ class CircuitComponentCatalog:
         """Retrieves specification for component or model name."""
         return self._specs.get(name.upper())
 
+    get_component = get_spec
+
     def get_subcircuit(self, name: str) -> Optional[SubcircuitDefinition]:
         """Retrieves subcircuit definition template."""
         return self._subcircuits.get(name.upper())

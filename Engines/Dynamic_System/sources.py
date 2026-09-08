@@ -48,10 +48,10 @@ class GroundBlock(Block):
 class StepSourceBlock(Block):
     """Step Input Source."""
 
-    def __init__(self, name: str, step_time: float = 0.0, amplitude: float = 1.0, initial_value: float = 0.0):
+    def __init__(self, name: str, step_time: float = 0.0, amplitude: float = 1.0, initial_value: float = 0.0, final_value: Optional[float] = None):
         super().__init__(name, num_inputs=0, num_outputs=1)
         self.step_time = float(step_time)
-        self.amplitude = float(amplitude)
+        self.amplitude = float(final_value) if final_value is not None else float(amplitude)
         self.initial_value = float(initial_value)
         self.direct_feedthrough = False
 

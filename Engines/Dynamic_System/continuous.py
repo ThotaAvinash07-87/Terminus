@@ -21,11 +21,13 @@ class IntegratorBlock(Block):
         initial_condition: float = 0.0,
         lower_limit: Optional[float] = None,
         upper_limit: Optional[float] = None,
-        reset_type: str = "none"  # 'none', 'rising', 'falling', 'level'
+        reset_type: str = "none",  # 'none', 'rising', 'falling', 'level'
+        x0: Optional[float] = None
     ):
         num_inputs = 2 if reset_type != "none" else 1
         super().__init__(name, num_inputs=num_inputs, num_outputs=1)
-        self.initial_condition = float(initial_condition)
+        init_val = x0 if x0 is not None else initial_condition
+        self.initial_condition = float(init_val)
         self.lower_limit = float(lower_limit) if lower_limit is not None else None
         self.upper_limit = float(upper_limit) if upper_limit is not None else None
         self.reset_type = reset_type.lower()

@@ -30,6 +30,10 @@ class LogicGate:
         self.output_wire = output_wire.strip()
         self.delay_ns = float(delay_ns)
 
+    @property
+    def gate_type(self) -> str:
+        return self.__class__.__name__.replace("Gate", "").upper()
+
     def evaluate(self, inputs: List[LogicValue]) -> LogicValue:
         return LogicValue.UNKNOWN
 

@@ -94,6 +94,43 @@ class MCUCore:
         self.labels: Dict[str, int] = {}
         self.peripherals = PeripheralBus()
         self.call_stack: List[int] = []
+        self.device_spec: Any = {
+            "device_name": "GENERIC_RISC_DSP",
+            "name": "GENERIC_RISC_DSP",
+            "clock_freq_hz": 60e6,
+            "supply_voltage": 3.3,
+            "flash_bytes": 65536,
+            "sram_bytes": sram_size,
+            "adc_bits": 12,
+            "adc_channels": 16,
+            "epwm_channels": 8,
+            "gpio_count": 32
+        }
+
+    @property
+    def clock_freq_mhz(self) -> float:
+        if hasattr(self.device_spec, "clock_freq_mhz"):
+            return self.device_spec.clock_freq_mhz
+        if isinstance(self.device_spec, dict):
+            return self.device_spec.get("clock_freq_hz", 60e6) / 1e6
+        return 60.0
+
+    @property
+    def flash_kb(self) -> int:
+        if hasattr(self.device_spec, "flash_kb"):
+            return self.device_spec.flash_kb
+        if isinstance(self.device_spec, dict):
+            return int(self.device_spec.get("flash_bytes", 65536) / 1024)
+        return 64
+
+    def apply_specification(self, spec: Any) -> None:
+        """Applies hardware characteristics parsed from .lib / .txt definition file."""
+        self.device_spec = spec
+
+        # Resize data memory if requested
+        new_sram = getattr(spec, "sram_bytes", None) or (spec.get("sram_bytes") if isinstance(spec, dict) else len(self.data_mem))
+        if new_sram != len(self.data_mem) and new_sram > 0:
+            self.data_mem = [0] * int(new_sram)
 
     def reset(self) -> None:
         self.regs.reset()
