@@ -53,8 +53,22 @@ from Engines.Digital_Logic.gates import LogicValue
 from Engines.Digital_Logic.hdl_parser import LogicCircuit, HDLParser
 from Engines.Digital_Logic.event_sim import EventSimulator, DigitalWaveformTracer
 
+from Engines.Embedded import (
+    BoardSpecification, BoardCatalog, board_catalog,
+    USBPortManager, USBDeviceInfo,
+    ProjectSketchManager, ProjectFile,
+    HardwareFirmwareFlasher, HardwareFlashResult,
+    RealSerialMonitor, RealAsciiSerialPlotter,
+    VirtualDevice, LEDDevice, RGBLEDDevice, ButtonDevice,
+    PotentiometerDevice, DHTSensorDevice, UltrasonicSensorDevice,
+    ServoDevice, LCD16x2Device, OLEDSSD1306Device, DeviceManager,
+    ArduinoPinState, ArduinoSerialStream, ArduinoRuntimeEngine,
+    CompilationResult, SerialPortInfo, scan_com_ports,
+    HardwareSerialBridge, AsciiSerialPlotter, FirmwareFlasher
+)
 from Engines.Embedded.mcu_core import MCUCore
 from Engines.Embedded.toolchain import Assembler, Disassembler
+
 
 
 def split_smart_args(text: str) -> List[str]:
@@ -115,6 +129,14 @@ class TerminusEngineBridge:
         self.last_logic_traces: Optional[Dict[str, List[Tuple[float, LogicValue]]]] = None
 
         self.mcu = MCUCore()
+        self.arduino = ArduinoRuntimeEngine("UNO")
+        self.target_board = board_catalog.get("UNO")
+        self.sketch_proj = ProjectSketchManager("MyProject")
+        self.active_com_port = USBPortManager.auto_detect_primary_port() or "COM3"
+        self.real_flasher = HardwareFirmwareFlasher(self.target_board, self.active_com_port)
+        self.real_serial = RealSerialMonitor(self.active_com_port, 115200)
+        self.ascii_plotter = self.real_serial.plotter
+        self.active_serial_bridge: Optional[HardwareSerialBridge] = None
 
         # Structured Project Storage (User's Documents/Terminus Files)
         self.storage = StorageManager.get_instance()
@@ -296,13 +318,30 @@ class TerminusEngineBridge:
                 "  truth <boolean_expression>   - Generate truth table",
             ])
         elif self.mode == "EMBEDDED":
+            port_tag = f"[bold green]{self.active_com_port}[/bold green]" if self.active_com_port else "[dim]None[/dim]"
             help_texts.extend([
-                "\nEmbedded Commands (C2000 MCU):",
-                "  load <asm_code_or_file>      - Assemble and load program",
-                "  step                         - Single-step instruction cycle",
-                "  run [max_cycles]             - Run execution",
-                "  dump                         - Dump registers, flags, and memory",
-                "  pwm <period> <duty>          - Configure ePWM peripheral",
+                f"\nEmbedded & Arduino Real-Hardware IDE Commands (Target: {self.target_board.name} | Port: {port_tag}):",
+                "  ports / com                  - Scan connected physical USB microcontroller boards & COM ports",
+                "  port <COMx>                  - Select target USB COM port (e.g. port COM3, port COM4)",
+                "  port test / reset            - Test port communication or send DTR/RTS hardware reset pulse",
+                "  board [list]                 - Browse 30+ supported boards (Arduino, ESP32, STM32, Pico, TI, RISC-V)",
+                "  board <board_id>             - Select active hardware board (e.g. board UNO, board ESP32, board STM32_BLUEPILL)",
+                "  board info                   - Inspect hardware specs, FQBN, memory sizes, and upload protocols",
+                "  code / sketch                - View full project code in editor with line numbers",
+                "  code new <ProjectName>       - Create a new project folder (Documents/Terminus Files/Embedded/<ProjectName>/)",
+                "  edit / edit open             - Open sketch in external text editor (Notepad, VS Code) or terminal",
+                "  edit set <text> / paste      - Replace active sketch buffer with new code text",
+                "  edit append <text>           - Append code block to current sketch buffer",
+                "  sketch example <name>        - Load hardware templates (blink, sensor_telemetry, analog_read, servo_sweep)",
+                "  compile / verify             - Compile sketch via host toolchains, output binary & Flash/RAM usage",
+                "  upload / flash               - Upload/dump compiled binary over USB cable to physical board",
+                "  dump [output.bin]            - Read & dump raw binary firmware from physical chip over USB",
+                "  serial / monitor             - Open live USB Serial Monitor to read real physical sensor stream",
+                "  serial plot / plotter        - Display live real-time ASCII telemetry waveform graph from physical sensors",
+                "  serial send <text>           - Send commands/strings over USB cable to running physical board",
+                "  serial baud <rate>           - Change baud rate (9600, 115200, 230400, etc.)",
+                "  file save [name]             - Save project to Documents/Terminus Files/Embedded/<ProjectName>/",
+                "  file open <name>             - Open project from storage",
             ])
         return "\n".join(help_texts)
 
@@ -413,10 +452,9 @@ class TerminusEngineBridge:
             return f"[green]Saved digital circuit to:[/green] [bold]{saved_path}[/bold]"
 
         elif self.mode == "EMBEDDED":
-            name = name or "mcu_program"
-            content = Disassembler.disassemble(self.mcu.prog_mem)
-            saved_path = self.storage.save_file("EMBEDDED", name, content)
-            return f"[green]Saved embedded program to:[/green] [bold]{saved_path}[/bold]"
+            proj_name = name or self.sketch_proj.project_name or "MyProject"
+            ok, msg = self.sketch_proj.save_project(proj_name)
+            return f"[green]{msg}[/green]"
 
         return "Workspace saved."
 
@@ -449,9 +487,11 @@ class TerminusEngineBridge:
             return f"[green]Loaded digital logic from:[/green] [bold]{path}[/bold]"
 
         elif self.mode == "EMBEDDED":
-            path, data = self.storage.load_file("EMBEDDED", name)
-            count = self.mcu.load_program(str(data))
-            return f"[green]Loaded embedded program from:[/green] [bold]{path}[/bold] ({count} words)"
+            ok, msg = self.sketch_proj.load_project(name)
+            if ok:
+                self.arduino.load_sketch(self.sketch_proj.source_code)
+                return f"[green]{msg}[/green]"
+            raise FileNotFoundError(f"Project '{name}' not found in {self.storage.get_mode_dir('EMBEDDED')}")
 
         return "File loaded."
 
@@ -1662,10 +1702,269 @@ class TerminusEngineBridge:
 
         raise ValueError(f"Unknown digital logic command '{line}'")
 
-    # --- Embedded Handlers ---
+    # --- Embedded Handlers (Real Hardware Arduino & Microcontroller IDE) ---
     def _handle_embedded(self, line: str, tokens: List[str]) -> str:
         first = tokens[0].lower()
 
+        # 1. Physical USB COM Ports & Device Discovery
+        if first in ("ports", "com", "port"):
+            if first in ("ports", "com") or (first == "port" and (len(tokens) == 1 or tokens[1].lower() in ("list", "scan", "ls"))):
+                devices = USBPortManager.scan_ports()
+                lines = [f"[bold cyan]=== Physical USB COM & Serial Ports ({len(devices)} detected) ===[/bold cyan]"]
+                if not devices:
+                    lines.append("  [dim]No USB serial ports detected. Connect your microcontroller via USB cable.[/dim]")
+                else:
+                    for d in devices:
+                        is_active = (d.port.upper() == self.active_com_port.upper())
+                        active_badge = "[bold green][ACTIVE][/bold green]" if is_active else "        "
+                        chip_info = f" -> {d.detected_board_hint}" if d.detected_board_hint else ""
+                        lines.append(f"  {active_badge} [bold]{d.port:<8}[/bold] : {d.description}{chip_info}")
+                lines.append(f"\nActive Target Port: [bold green]{self.active_com_port}[/bold green]")
+                lines.append("[dim]To change port: type 'port <COMx>' (e.g. port COM3, port COM4)[/dim]")
+                return "\n".join(lines)
+
+            sub = tokens[1].lower()
+            if sub in ("select", "set") or (tokens[1].upper().startswith("COM") or tokens[1].startswith("/dev/")):
+                p_name = tokens[2] if sub in ("select", "set") and len(tokens) > 2 else tokens[1]
+                self.active_com_port = p_name.upper()
+                self.real_flasher.port = self.active_com_port
+                self.real_serial.port = self.active_com_port
+                return f"[green]Target USB port set to:[/green] [bold]{self.active_com_port}[/bold]"
+
+            if sub in ("test", "check"):
+                p_target = tokens[2] if len(tokens) > 2 else self.active_com_port
+                ok, msg = USBPortManager.test_connection(p_target, self.real_serial.baudrate)
+                color = "green" if ok else "red"
+                return f"[{color}]{msg}[/{color}]"
+
+            if sub in ("reset", "dtr", "rts"):
+                p_target = tokens[2] if len(tokens) > 2 else self.active_com_port
+                ok, msg = USBPortManager.hardware_reset(p_target)
+                color = "green" if ok else "red"
+                return f"[{color}]{msg}[/{color}]"
+
+        # 2. Target Board Selection & Catalog
+        if first in ("board", "boards", "target"):
+            if len(tokens) == 1 or tokens[1].lower() in ("list", "ls"):
+                cat = tokens[2].upper() if len(tokens) > 2 else ""
+                table_str = board_catalog.generate_summary_table(cat)
+                curr = f"Active Target: [bold green]{self.target_board.name} ({self.target_board.mcu})[/bold green] [{self.target_board.id}]"
+                return f"{curr}\n\n{table_str}\n\n[dim]To select a board, type 'board <id>' (e.g. board ESP32, board STM32_BLUEPILL, board RPI_PICO)[/dim]"
+
+            if tokens[1].lower() in ("info", "inspect", "show"):
+                target_id = tokens[2].upper() if len(tokens) > 2 else self.target_board.id
+                spec = board_catalog.get(target_id)
+                if not spec:
+                    raise ValueError(f"Unknown board ID '{target_id}'. Use 'board list' to see all.")
+                lines = [
+                    f"[bold cyan]=== Microcontroller Specification: {spec.name} ===[/bold cyan]",
+                    f"  Board ID     : {spec.id} (Family: {spec.family})",
+                    f"  MCU / Core   : {spec.mcu} ({spec.architecture}) @ {spec.clock_mhz} MHz ({spec.voltage_v}V logic)",
+                    f"  Flash Memory : {spec.flash_kb} KB ({spec.flash_kb*1024:,} bytes) [Base: {spec.flash_base_addr}]",
+                    f"  SRAM Memory  : {spec.ram_kb} KB ({spec.ram_kb*1024:,} bytes) [Base: {spec.ram_base_addr}]",
+                    f"  EEPROM Memory: {spec.eeprom_bytes} bytes",
+                    f"  I/O Pins     : {spec.gpio_count} Digital GPIOs, {spec.adc_channels} ADC channels ({spec.adc_resolution_bits}-bit), {spec.pwm_channels} PWM pins",
+                    f"  Protocols    : UART={spec.has_uart}, I2C={spec.has_i2c}, SPI={spec.has_spi}, CAN={spec.has_can}, WiFi={spec.has_wifi}, BLE={spec.has_ble}",
+                    f"  Toolchain    : {spec.upload_tool} ({spec.upload_protocol} @ {spec.default_baud} baud)",
+                ]
+                if spec.fqbn:
+                    lines.append(f"  Arduino FQBN : {spec.fqbn}")
+                return "\n".join(lines)
+
+            # Set board
+            new_id = tokens[1].upper()
+            spec = board_catalog.get(new_id)
+            if not spec:
+                matches = board_catalog.search(tokens[1])
+                if matches:
+                    spec = matches[0]
+                else:
+                    raise ValueError(f"Board '{tokens[1]}' not found in catalog. Type 'board list' for all supported boards.")
+            self.target_board = spec
+            self.real_flasher.board = spec
+            self.arduino.set_board(spec.id)
+            return f"[green]Target board switched to:[/green] [bold]{spec.name}[/bold] ({spec.mcu}, {spec.clock_mhz}MHz, {spec.flash_kb}KB Flash, {spec.ram_kb}KB RAM)"
+
+        # 3. Sketch Code Editor & Project Management
+        if first in ("code", "sketch", "project", "edit", "template"):
+            if first == "template":
+                ex_name = tokens[1].lower() if len(tokens) > 1 else "blink"
+                return self._load_template(ex_name)
+
+            if first in ("code", "sketch") and (len(tokens) == 1 or tokens[1].lower() in ("show", "view", "cat")):
+                return self.sketch_proj.view_code()
+
+            sub = tokens[1].lower() if len(tokens) > 1 else ("open" if first == "edit" else "show")
+
+            if first == "project" and len(tokens) > 1 and sub not in ("new", "create", "open", "save", "list", "files"):
+                # Shorthand: 'project MyProj' -> create project
+                pname = tokens[1]
+                self.sketch_proj.new_project(pname)
+                self.arduino.load_sketch(self.sketch_proj.source_code)
+                return f"[green]Created project '{pname}'[/green] in {self.sketch_proj.get_project_dir()}"
+
+            if sub in ("new", "create"):
+                pname = tokens[2] if len(tokens) > 2 else "NewProject"
+                self.sketch_proj.new_project(pname)
+                self.arduino.load_sketch(self.sketch_proj.source_code)
+                return f"[green]Created new project:[/green] [bold]{pname}[/bold] in {self.sketch_proj.get_project_dir()}"
+
+            if sub in ("open", "external", "launch") or first == "edit":
+                # Launch external editor if no extra args
+                if len(tokens) == 1 or (len(tokens) == 2 and sub in ("open", "external")):
+                    ok, msg = self.sketch_proj.launch_external_editor()
+                    return f"[{'green' if ok else 'yellow'}]{msg}[/{'green' if ok else 'yellow'}]"
+
+                if sub in ("set", "paste", "replace"):
+                    new_code = line[line.lower().find(sub) + len(sub):].strip()
+                    self.sketch_proj.set_content(new_code)
+                    self.arduino.load_sketch(self.sketch_proj.source_code)
+                    return f"[green]Updated sketch buffer[/green] ({len(self.sketch_proj.source_code.splitlines())} lines)."
+
+                if sub == "append":
+                    append_txt = line[line.lower().find("append") + 6:].strip()
+                    self.sketch_proj.append_content(append_txt)
+                    self.arduino.load_sketch(self.sketch_proj.source_code)
+                    return f"[green]Appended line to sketch buffer[/green] (Total: {len(self.sketch_proj.source_code.splitlines())} lines)."
+
+            if sub == "clear":
+                self.sketch_proj.set_content("")
+                self.arduino.source_code = ""
+                return "Sketch buffer cleared."
+
+            if sub == "example":
+                ex_name = tokens[2].lower() if len(tokens) > 2 else "blink"
+                return self._load_template(ex_name)
+
+            # Direct append
+            direct_text = line[len(tokens[0]):].strip()
+            self.sketch_proj.append_content(direct_text)
+            self.arduino.load_sketch(self.sketch_proj.source_code)
+            return f"[green]Appended line to sketch.[/green] Total lines: {len(self.sketch_proj.source_code.splitlines())}"
+
+        # 4. Compilation & Verification
+        if first in ("compile", "verify", "build"):
+            # Save project first to ensure build directory is in sync
+            self.sketch_proj.save_project()
+            main_path = self.sketch_proj.get_main_filepath()
+
+            ok, report, bin_path = self.real_flasher.compile_project(main_path)
+            if not ok:
+                return f"[bold red]Compilation Failed:[/bold red]\n{report}"
+
+            lines = [
+                report,
+                f"\n[bold green]Ready for hardware upload.[/bold green] Type 'upload' or 'flash' to deploy to {self.active_com_port}."
+            ]
+            return "\n".join(lines)
+
+        # 5. Real Hardware Upload / Flashing
+        if first in ("upload", "flash", "deploy", "dump", "read_flash"):
+            if first in ("dump", "read_flash"):
+                out_name = tokens[1] if len(tokens) > 1 else f"{self.sketch_proj.project_name}_dump.bin"
+                out_path = self.sketch_proj.get_project_dir() / out_name
+                ok, msg = self.real_flasher.dump_flash_from_hardware(out_path, self.active_com_port)
+                color = "green" if ok else "red"
+                return f"[{color}]{msg}[/{color}]"
+
+            # Auto-compile before upload
+            self.sketch_proj.save_project()
+            main_path = self.sketch_proj.get_main_filepath()
+            ok_comp, report, bin_path = self.real_flasher.compile_project(main_path)
+            if not ok_comp:
+                return f"[bold red]Upload aborted: Compilation failed.[/bold red]\n{report}"
+
+            # Target port
+            target_port = tokens[1].upper() if len(tokens) > 1 and tokens[1].upper().startswith("COM") else self.active_com_port
+
+            # Close serial monitor if open to prevent port locking
+            if self.real_serial.connected and self.real_serial.port == target_port:
+                self.real_serial.disconnect()
+
+            res = self.real_flasher.upload_to_hardware(bin_path, target_port)
+            if res.success:
+                # Auto-reconnect serial monitor after upload
+                self.real_serial.connect(target_port)
+                return (
+                    f"[bold green]=== Upload Succeeded ===[/bold green]\n"
+                    f"  Target Board : {self.target_board.name} ({self.target_board.mcu})\n"
+                    f"  Port         : {res.port}\n"
+                    f"  Toolchain    : {res.toolchain_used}\n"
+                    f"  Payload Size : {res.bytes_written:,} bytes\n"
+                    f"  Duration     : {res.duration_s:.2f} s\n\n"
+                    f"[bold cyan]Serial Monitor reconnected to {target_port}. Type 'serial monitor' or 'serial plot' to view telemetry.[/bold cyan]"
+                )
+            else:
+                return res.message
+
+        # 6. Physical USB Serial Monitor & Waveform Plotter
+        if first in ("serial", "monitor", "plot", "plotter", "send"):
+            if first == "send":
+                msg = line[len(tokens[0]):].strip()
+                ok, out_msg = self.real_serial.write_data(msg)
+                color = "green" if ok else "red"
+                return f"[{color}]{out_msg}[/{color}]"
+
+            if first in ("plot", "plotter") or (len(tokens) > 1 and tokens[1].lower() in ("plot", "plotter", "chart")):
+                if len(tokens) > 1 and tokens[1].lower() == "status":
+                    return f"Live ASCII Telemetry Plotter: active, channels={len(self.real_serial.plotter.channels)}"
+                return self.real_serial.plotter.render()
+
+            if len(tokens) == 1 or tokens[1].lower() in ("monitor", "show", "read", "view"):
+                if not self.real_serial.connected:
+                    self.real_serial.connect()
+                return self.real_serial.get_monitor_view()
+
+            sub = tokens[1].lower()
+            if sub == "status":
+                conn_str = f"Connected to {self.real_serial.port} @ {self.real_serial.baudrate} baud" if self.real_serial.connected else "Disconnected"
+                return f"Physical USB Serial Monitor: {conn_str}, Buffer count: {len(self.real_serial.rx_buffer)}"
+
+            if sub == "clear":
+                self.real_serial.clear_buffer()
+                return "Serial Monitor and Plotter buffers cleared."
+
+            if sub in ("send", "write", "tx"):
+                msg = " ".join(tokens[2:])
+                ok, out_msg = self.real_serial.write_data(msg)
+                color = "green" if ok else "red"
+                return f"[{color}]{out_msg}[/{color}]"
+
+            if sub in ("baud", "speed", "rate"):
+                if len(tokens) < 3:
+                    return f"Current Serial Baud Rate: {self.real_serial.baudrate} baud."
+                new_baud = int(tokens[2])
+                self.real_serial.baudrate = new_baud
+                self.real_serial.connect(baudrate=new_baud)
+                return f"[green]Serial baud rate switched to:[/green] [bold]{new_baud} baud[/bold]."
+
+            if sub in ("connect", "open"):
+                p = tokens[2] if len(tokens) > 2 else self.active_com_port
+                ok, msg = self.real_serial.connect(port=p)
+                color = "green" if ok else "red"
+                return f"[{color}]{msg}[/{color}]"
+
+            if sub in ("disconnect", "close"):
+                self.real_serial.disconnect()
+                return f"[yellow]Serial Monitor disconnected from {self.active_com_port}.[/yellow]"
+
+        # 7. Hybrid / Simulation Fallbacks
+        if first in ("run", "sim", "step", "pins"):
+            if first in ("run", "sim"):
+                cycles = int(tokens[1]) if len(tokens) > 1 else 10
+                self.arduino.load_sketch(self.sketch_proj.source_code)
+                ok, logs = self.arduino.run_continuous(cycles=cycles)
+                if logs:
+                    self.ascii_plotter.feed_lines(logs)
+                return f"[bold green]Executed {cycles} simulated cycle(s) on {self.target_board.name}.[/bold green]\n" + "\n".join(f"  > {l}" for l in logs[-15:])
+            if first == "step":
+                self.arduino.load_sketch(self.sketch_proj.source_code)
+                delta = self.arduino.step_loop()
+                return f"[bold green]Stepped 1 iteration.[/bold green] Serial: " + " | ".join(delta)
+            if first == "pins":
+                return self.arduino.get_pinout_ascii()
+
+        # 8. Assembly-Level C2000 Legacy Fallback
         if first == "load":
             asm_code = line[4:].strip()
             if os.path.exists(asm_code):
@@ -1674,24 +1973,13 @@ class TerminusEngineBridge:
             count = self.mcu.load_program(asm_code)
             return f"[green]Loaded MCU program:[/green] {count} instruction(s) assembled.\n\n" + Disassembler.disassemble(self.mcu.prog_mem, pc_highlight=0)
 
-        if first == "step":
-            ok = self.mcu.step()
-            pc = self.mcu.regs.PC
-            dis = Disassembler.disassemble(self.mcu.prog_mem, pc_highlight=pc)
-            status = self.mcu.dump_state()
-            return f"{status}\n\n{dis}"
-
-        if first in ("run", "exec"):
-            max_cyc = int(tokens[1]) if len(tokens) > 1 else 10000
-            cycles = self.mcu.run(max_cycles=max_cyc)
-            return f"Execution stopped after {cycles} cycles.\n\n" + self.mcu.dump_state()
-
         if first == "dump":
             return self.mcu.dump_state()
 
         if first == "reset":
+            self.arduino.reset()
             self.mcu.reset()
-            return "MCU Reset complete."
+            return "Embedded MCU and IDE Workspace Reset complete."
 
         if first == "pwm":
             if len(tokens) < 3:
@@ -1704,7 +1992,96 @@ class TerminusEngineBridge:
             plot_str = AsciiPlotter.plot(wf.x, wf.y, title=f"ePWM Output (Duty: {self.mcu.peripherals.epwm.duty_cycle*100:.1f}%)", x_label="Time (s)")
             return f"Configured ePWM1A: Period={prd}, Duty={duty}\n\n{plot_str}"
 
-        raise ValueError(f"Unknown embedded command '{line}'")
+        raise ValueError(f"Unknown embedded command '{line}'. Type 'help' for all commands.")
+
+    def _load_template(self, ex_name: str) -> str:
+        examples = {
+            "blink": (
+                "// ==========================================\n"
+                "// Built-in Hardware Template: LED Blink\n"
+                "// Connect LED anode to Pin 13 / onboard LED\n"
+                "// ==========================================\n"
+                "const int ledPin = 13;\n\n"
+                "void setup() {\n"
+                "  pinMode(ledPin, OUTPUT);\n"
+                "  Serial.begin(115200);\n"
+                "  Serial.println(\"=== Hardware LED Blink Active ===\");\n"
+                "}\n\n"
+                "void loop() {\n"
+                "  digitalWrite(ledPin, HIGH);\n"
+                "  Serial.println(\"LED: HIGH\");\n"
+                "  delay(500);\n"
+                "  digitalWrite(ledPin, LOW);\n"
+                "  Serial.println(\"LED: LOW\");\n"
+                "  delay(500);\n"
+                "}\n"
+            ),
+            "sensor_telemetry": (
+                "// ==========================================\n"
+                "// Hardware Template: Multi-Channel Sensor Telemetry\n"
+                "// Connect Analog Sensors to A0, A1, A2\n"
+                "// ==========================================\n"
+                "void setup() {\n"
+                "  Serial.begin(115200);\n"
+                "  pinMode(A0, INPUT);\n"
+                "  pinMode(A1, INPUT);\n"
+                "}\n\n"
+                "void loop() {\n"
+                "  float v_a0 = analogRead(A0) * (5.0 / 1023.0);\n"
+                "  float v_a1 = analogRead(A1) * (5.0 / 1023.0);\n"
+                "  // Output format for Serial Plotter\n"
+                "  Serial.print(v_a0);\n"
+                "  Serial.print(\", \");\n"
+                "  Serial.println(v_a1);\n"
+                "  delay(100);\n"
+                "}\n"
+            ),
+            "servo_sweep": (
+                "// ==========================================\n"
+                "// Hardware Template: Servo Motor Sweep\n"
+                "// Connect Servo PWM signal to Pin 9\n"
+                "// ==========================================\n"
+                "#include <Servo.h>\n"
+                "Servo myServo;\n\n"
+                "void setup() {\n"
+                "  myServo.attach(9);\n"
+                "  Serial.begin(115200);\n"
+                "  Serial.println(\"Servo Sweep Initialized on Pin 9\");\n"
+                "}\n\n"
+                "void loop() {\n"
+                "  for (int pos = 0; pos <= 180; pos += 45) {\n"
+                "    myServo.write(pos);\n"
+                "    Serial.print(\"Servo Angle: \");\n"
+                "    Serial.println(pos);\n"
+                "    delay(200);\n"
+                "  }\n"
+                "}\n"
+            ),
+            "serial_echo": (
+                "// ==========================================\n"
+                "// Hardware Template: Bidirectional Serial Echo\n"
+                "// Interact via 'serial send <command>'\n"
+                "// ==========================================\n"
+                "void setup() {\n"
+                "  Serial.begin(115200);\n"
+                "  Serial.println(\"Ready. Send characters to receive echo.\");\n"
+                "}\n\n"
+                "void loop() {\n"
+                "  if (Serial.available() > 0) {\n"
+                "    String incoming = Serial.readStringUntil('\\n');\n"
+                "    Serial.print(\"Echo Received: \");\n"
+                "    Serial.println(incoming);\n"
+                "  }\n"
+                "}\n"
+            ),
+        }
+        if ex_name not in examples:
+            valid_ex = ", ".join(examples.keys())
+            raise ValueError(f"Unknown template '{ex_name}'. Available: {valid_ex}")
+
+        self.sketch_proj.set_content(examples[ex_name])
+        self.arduino.load_sketch(self.sketch_proj.source_code)
+        return f"[green]Loaded hardware template '{ex_name}' into project.[/green]\nType 'compile' then 'upload' to dump onto real board."
 
     # --- Unified Handlers ---
     def _handle_unified(self, line: str, tokens: List[str]) -> str:

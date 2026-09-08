@@ -27,7 +27,7 @@ class StorageManager:
         "NUMERICAL": ("Numerical", ".m"),
         "DYNAMIC": ("Dynamic_System", ".tmdl"),
         "DIGITAL": ("Digital_Logic", ".v"),
-        "EMBEDDED": ("Embedded", ".asm"),
+        "EMBEDDED": ("Embedded", ".ino"),
         "EXPORTS": ("Exports", ".csv"),
     }
 
@@ -94,27 +94,65 @@ class StorageManager:
 
         mode_dir = self.get_mode_dir(mode)
         default_ext = self.get_default_ext(mode)
+        m_upper = mode.upper().strip()
 
-        # Check if already in mode dir
+        # Handle Embedded Arduino-style project directories: Embedded/<ProjectName>/<ProjectName>.ino
+        if m_upper == "EMBEDDED":
+            clean_stem = p.stem
+            # Check if user specified a sub-path like "MyProject/MyProject.ino" or "MyProject/config.h"
+            if len(p.parts) > 1:
+                return mode_dir / filename
+            # Check if project folder exists: Embedded/MyProject/MyProject.ino
+            proj_dir = mode_dir / clean_stem
+            proj_main_file = proj_dir / f"{clean_stem}{p.suffix or default_ext}"
+            if proj_main_file.exists():
+                return proj_main_file
+            # Check flat file: Embedded/filename.ino
+            if (mode_dir / filename).exists():
+                return mode_dir / filename
+            if not filename.endswith(default_ext) and (mode_dir / f"{filename}{default_ext}").exists():
+                return mode_dir / f"{filename}{default_ext}"
+            # By default for new files in EMBEDDED: create project folder Embedded/<ProjectName>/<ProjectName>.ino
+            return proj_dir / f"{clean_stem}{p.suffix or default_ext}"
+
+        # Standard resolution for other modes
         if (mode_dir / filename).exists():
             return mode_dir / filename
 
-        # Check if adding default extension matches an existing file
         if not filename.endswith(default_ext):
             with_ext = mode_dir / f"{filename}{default_ext}"
             if with_ext.exists():
                 return with_ext
 
-        # Default to mode dir with extension if none provided
         if not p.suffix:
             return mode_dir / f"{filename}{default_ext}"
         return mode_dir / filename
 
     def list_files(self, mode: str) -> List[Dict[str, Any]]:
-        """Lists all files stored in the mode's directory with metadata."""
+        """Lists all files and project directories stored in the mode's directory with metadata."""
         mode_dir = self.get_mode_dir(mode)
         results = []
         if not mode_dir.exists():
+            return results
+
+        # For EMBEDDED: also inspect project folders
+        m_upper = mode.upper().strip()
+        if m_upper == "EMBEDDED":
+            for item in sorted(mode_dir.glob("**/*")):
+                if item.is_file():
+                    stat = item.stat()
+                    mod_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime))
+                    size_kb = stat.st_size / 1024.0
+                    rel_name = str(item.relative_to(mode_dir)).replace("\\", "/")
+                    results.append({
+                        "name": rel_name,
+                        "stem": item.stem,
+                        "project": item.parent.name if item.parent != mode_dir else item.stem,
+                        "size_bytes": stat.st_size,
+                        "size_formatted": f"{size_kb:.1f} KB" if size_kb >= 1.0 else f"{stat.st_size} B",
+                        "modified": mod_time,
+                        "path": str(item),
+                    })
             return results
 
         for item in sorted(mode_dir.glob("*")):
