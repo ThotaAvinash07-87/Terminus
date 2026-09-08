@@ -239,6 +239,9 @@ class TransferFunctionBlock(Block):
         self.C = np.asarray(ss_sys.C, dtype=float)
         self.D = np.asarray(ss_sys.D, dtype=float)
 
+        self.num = list(num_arr)
+        self.den = list(den_arr)
+
         self.states = np.zeros(self.A.shape[0], dtype=float)
         self.direct_feedthrough = bool(np.abs(self.D[0, 0]) > 1e-12)
 

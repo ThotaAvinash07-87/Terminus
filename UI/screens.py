@@ -8,6 +8,9 @@ from textual.widgets import Header, Footer, Input, RichLog, Static
 from .widgets import (
     AsciiPlotWidget,
     SchematicCanvasWidget,
+    LibraryBrowserWidget,
+    BlockInspectorWidget,
+    DiagnosticReportWidget,
     McuStateWidget,
     LogicTimingWidget,
 )
@@ -46,9 +49,35 @@ class NumericalScreen(BaseSubsystemScreen):
         super().__init__("NUMERICAL (MATLAB)", **kwargs)
 
 
-class DynamicSystemScreen(BaseSubsystemScreen):
+class DynamicSystemScreen(Screen):
+    """Rich multi-pane Simulink-like workspace screen for Dynamic Systems."""
+
     def __init__(self, **kwargs):
-        super().__init__("DYNAMIC SYSTEMS (SIMULINK)", **kwargs)
+        super().__init__(**kwargs)
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True)
+        with Horizontal(id="simulink_workspace"):
+            # Left pane: Library Browser
+            with Vertical(id="simulink_left", classes="sidebar"):
+                yield LibraryBrowserWidget(id="library_browser")
+            
+            # Center pane: Model Canvas & Console Log / Plotter
+            with Vertical(id="simulink_center"):
+                yield SchematicCanvasWidget(id="block_canvas")
+                yield AsciiPlotWidget(id="scope_viewer")
+                yield RichLog(id="console", highlight=True, markup=True)
+            
+            # Right pane: Block Inspector & Diagnostics
+            with Vertical(id="simulink_right", classes="sidebar"):
+                yield BlockInspectorWidget(id="block_inspector")
+                yield DiagnosticReportWidget(id="diagnostic_panel")
+
+        yield Input(
+            placeholder="Terminus [DYNAMIC] > Enter command (e.g. 'library', 'add step Step1', 'connect Step1.0 Plant.0', 'check', 'sim 10')...",
+            id="command_input"
+        )
+        yield Footer()
 
 
 class DigitalLogicScreen(BaseSubsystemScreen):

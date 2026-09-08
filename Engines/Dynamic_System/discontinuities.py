@@ -14,13 +14,13 @@ class SaturationBlock(Block):
         super().__init__(name, num_inputs=1, num_outputs=1)
         self.lower_limit = float(lower_limit)
         self.upper_limit = float(upper_limit)
-        if self.lower_limit > self.upper_limit:
-            self.lower_limit, self.upper_limit = self.upper_limit, self.lower_limit
         self.direct_feedthrough = True
 
     def compute_output(self, t: float) -> List[float]:
         u = float(self.inputs[0])
-        self.outputs[0] = max(self.lower_limit, min(u, self.upper_limit))
+        low = min(self.lower_limit, self.upper_limit)
+        high = max(self.lower_limit, self.upper_limit)
+        self.outputs[0] = max(low, min(u, high))
         return self.outputs
 
 

@@ -1,0 +1,91 @@
+{
+  "model_name": "PID_Speed_Controller",
+  "description": "TerminusECE Dynamic System Model",
+  "settings": {
+    "solver": "rk4",
+    "dt": 0.001,
+    "t_start": 0.0,
+    "t_stop": 10.0,
+    "tolerance": 1e-06
+  },
+  "blocks": {
+    "REF": {
+      "type": "sources/step",
+      "parameters": {
+        "step_time": 1.0,
+        "amplitude": 60.0,
+        "initial_value": 0.0
+      }
+    },
+    "ERROR": {
+      "type": "math/sum",
+      "parameters": {
+        "signs": [
+          1.0,
+          -1.0
+        ]
+      }
+    },
+    "CONTROLLER": {
+      "type": "continuous/pid",
+      "parameters": {
+        "kp": 3.2,
+        "ki": 1.0,
+        "kd": 0.1,
+        "n_filter": 100.0
+      }
+    },
+    "ACTUATOR": {
+      "type": "discontinuities/saturation",
+      "parameters": {
+        "lower_limit": 0.0,
+        "upper_limit": 120.0
+      }
+    },
+    "VEHICLE": {
+      "type": "continuous/tf",
+      "parameters": {
+        "num": [
+          1.0
+        ],
+        "den": [
+          10.0,
+          1.0
+        ]
+      }
+    },
+    "SPEEDSCOPE": {
+      "type": "sinks/scope",
+      "parameters": {
+        "buffer_size": 100000,
+        "sample_time": 0.0
+      }
+    }
+  },
+  "connections": [
+    {
+      "src": "REF.0",
+      "dst": "ERROR.0"
+    },
+    {
+      "src": "ERROR.0",
+      "dst": "CONTROLLER.0"
+    },
+    {
+      "src": "CONTROLLER.0",
+      "dst": "ACTUATOR.0"
+    },
+    {
+      "src": "ACTUATOR.0",
+      "dst": "VEHICLE.0"
+    },
+    {
+      "src": "VEHICLE.0",
+      "dst": "SPEEDSCOPE.0"
+    },
+    {
+      "src": "VEHICLE.0",
+      "dst": "ERROR.1"
+    }
+  ]
+}

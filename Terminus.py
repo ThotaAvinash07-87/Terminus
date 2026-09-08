@@ -18,6 +18,17 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 
+from rich.console import Console
+
+console = Console()
+
+
+def strip_or_render_markup(text: str) -> None:
+    """Renders text with rich ANSI colors and box drawings in standard terminal."""
+    if text:
+        console.print(text)
+
+
 def run_cli_commands(commands: str) -> None:
     bridge = TerminusEngineBridge()
     for line in split_smart_statements(commands, ";"):
@@ -27,18 +38,40 @@ def run_cli_commands(commands: str) -> None:
         try:
             res = bridge.execute_command(line)
             if res:
-                # Strip textual rich markup tags for clean CLI stdout output
-                clean_text = res.replace("[bold green]", "").replace("[/bold green]", "") \
-                                .replace("[bold cyan]", "").replace("[/bold cyan]", "") \
-                                .replace("[bold magenta]", "").replace("[/bold magenta]", "") \
-                                .replace("[bold yellow]", "").replace("[/bold yellow]", "") \
-                                .replace("[bold red]", "").replace("[/bold red]", "") \
-                                .replace("[green]", "").replace("[/green]", "") \
-                                .replace("[red]", "").replace("[/red]", "") \
-                                .replace("[yellow]", "").replace("[/yellow]", "")
-                print(clean_text)
+                strip_or_render_markup(res)
         except Exception as e:
             print(f"Error executing '{line}': {e}", file=sys.stderr)
+
+
+def run_cli_repl() -> None:
+    """Interactive Command-by-Command CLI REPL Shell in standard terminal."""
+    bridge = TerminusEngineBridge()
+    console.print("[bold green]=== TerminusECE Interactive Command Line Shell ===[/bold green]")
+    console.print("Unified EDA command workspace. Type [bold cyan]'help'[/bold cyan] for commands, [bold cyan]'exit'[/bold cyan] or [bold cyan]'quit'[/bold cyan] to exit.")
+    console.print("Quick Start: Type [bold yellow]'mode dynamic'[/bold yellow] to enter Simulink Dynamic Systems mode.\n")
+
+    while True:
+        try:
+            prompt_str = f"Terminus [{bridge.mode}] > "
+            line = input(prompt_str).strip()
+            if not line:
+                continue
+            if line.lower() in ("exit", "quit", "q"):
+                console.print("[yellow]Exiting TerminusECE CLI. Goodbye![/yellow]")
+                break
+            if line.lower() == "clear" and bridge.mode != "DYNAMIC":
+                os.system("cls" if os.name == "nt" else "clear")
+                continue
+
+            res = bridge.execute_command(line)
+            if res:
+                strip_or_render_markup(res)
+                print()  # Empty line separator
+        except (KeyboardInterrupt, EOFError):
+            console.print("\n[yellow]Session interrupted. Exiting.[/yellow]")
+            break
+        except Exception as err:
+            console.print(f"[bold red]Error:[/bold red] {err}\n")
 
 
 def run_script_file(file_path: str) -> None:
@@ -53,6 +86,16 @@ def run_script_file(file_path: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="TerminusECE - Terminal-based unified workspace for ECE"
+    )
+    parser.add_argument(
+        "--tui", "--gui",
+        action="store_true",
+        help="Start in optional Textual full-screen TUI mode"
+    )
+    parser.add_argument(
+        "--cli", "-i", "--repl",
+        action="store_true",
+        help="Start in interactive command-by-command CLI REPL mode"
     )
     parser.add_argument(
         "--cmd", "-c",
@@ -93,9 +136,13 @@ def main() -> None:
         run_script_file(args.file)
         return
 
-    # Interactive TUI mode
-    app = TerminusApp()
-    app.run()
+    if args.tui:
+        app = TerminusApp()
+        app.run()
+        return
+
+    # Default: clean interactive CLI REPL
+    run_cli_repl()
 
 
 if __name__ == "__main__":
