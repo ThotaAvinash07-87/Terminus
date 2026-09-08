@@ -13,14 +13,19 @@ from textual.widgets import Header, Footer, Input, RichLog, Static
 
 from CORE.common_math import parse_eng_unit, format_eng_unit, Waveform, SignalMetrics, split_smart_statements
 from CORE.ascii_canvas import AsciiCanvas, AsciiPlotter, AsciiBodePlotter, SchematicVisualizer
-from CORE.ipc_router import IPCRouter, IPCClient
+from CORE.ipc_router import IPCRouter, IPCClient, TerminalSessionInfo, ipc_router_instance, ipc_client_instance
 from CORE.storage_manager import StorageManager
 
 from Engines.Circuit.components import (
-    Resistor, Capacitor, Inductor, VoltageSource, CurrentSource, Diode, VCVS, BJT
+    Component, Resistor, Capacitor, Inductor, CoupledInductors,
+    VoltageSource, CurrentSource, Diode, BJT, MOSFET, JFET,
+    VoltageControlledSwitch, CurrentControlledSwitch, VCVS, VCCS, CCVS, CCCS,
+    BehavioralSource, OpAmpModel, SubcircuitDefinition, SubcircuitInstance
 )
 from Engines.Circuit.netlist_parser import Netlist, CircuitParser
 from Engines.Circuit.mna_solver import MNASolver, SimulationResult
+from Engines.Circuit.catalog import circuit_catalog, CircuitComponentCatalog, CircuitComponentSpec
+from Engines.Circuit.diagnostics import CircuitDiagnosticChecker, CircuitDiagnosticLevel, CircuitDiagnosticReport
 
 from Engines.Numerical.parser import NumericalWorkspace, NumericalASTParser
 from Engines.Numerical.transforms import TransferFunction, DiscreteTransferFunction
@@ -177,6 +182,9 @@ class TerminusEngineBridge:
         if first == "export":
             return self._cmd_export(tokens[1:])
 
+        if first == "session":
+            return self._handle_session_command(line, tokens)
+
         if first == "ipc":
             return self._cmd_ipc(tokens[1:])
 
@@ -208,18 +216,31 @@ class TerminusEngineBridge:
             "  file close                   - Close and reset current model/workspace",
             "  file path / file storage     - Show Documents/Terminus Files folder paths",
             "  mode <subsystem>             - Switch mode (circuit, numerical, dynamic, digital, embedded)",
+            "  session list / ls            - Discover and list active terminal sessions on LAN (up to 500+)",
+            "  session server start [port]  - Start multi-terminal async IPC network server",
+            "  session connect <ip:port>    - Connect this session to another terminal / computer",
+            "  session exec <id> <cmd>      - Remotely execute command on terminal Session #<id>",
+            "  session link <sig> <id>.<sig>- Bridge and live-stream signals across terminal sessions",
+            "  session broadcast <msg>      - Broadcast message/variable across all terminals",
             "  export [name] [--format=csv] - Export last simulation results to Exports/ folder",
-            "  ipc start / set / get        - Cross-terminal IPC sync",
         ]
         if self.mode == "CIRCUIT":
             help_texts.extend([
-                "\nCircuit Commands (LTspice-like):",
-                "  add <Name> <Val> [ac=1]      - e.g. add V1 10V ac=1, add R1 1k, add C1 1u",
-                "  connect <p1> | <p2> | <net>  - e.g. connect V1.p | R1.a, connect R1.b | C1.a | node_out",
-                "  run .ac dec 10 1Hz 100kHz    - Run AC frequency sweep & render ASCII Bode plot",
-                "  run .tran 1u 10m             - Run Transient simulation",
-                "  run .op                      - Run DC Operating Point",
-                "  run .dc V1 0 10 0.1          - Run DC Sweep",
+                "\nCircuit Commands (LTspice-grade Workflow):",
+                "  library [category]           - Browse LTspice component library (Passives, Diodes, Transistors, ICs...)",
+                "  library search <query>       - Search models by name/tag (e.g. library search 1N4148, library search MOSFET)",
+                "  inspect <comp_or_model>      - View detailed specs, SPICE syntax, pinouts (e.g. inspect IRF540N, inspect R1)",
+                "  check / diagnose             - Run Design Rule Check (DRC) for floating nodes, shorted sources, missing ground",
+                "  add <Name> <Val/Model>       - Add component (e.g. add V1 10V ac=1, add M1 IRF540N, add D1 1N4148)",
+                "  connect <p1> | <p2> | <net>  - Connect pins/nets (e.g. connect V1.p | R1.a, connect R1.b | C1.a | out)",
+                "  tune / set <Name>.<param> <v>- Tune component parameter (e.g. set R1.value 2.2k)",
+                "  probe <net>                  - Probe waveform metrics, peak-to-peak, RMS and ASCII plot",
+                "  run .op                      - Run DC Operating Point with Newton-Raphson & Gmin stepping",
+                "  run .dc V1 0 10 0.1          - Run DC Parameter Sweep & transfer curves",
+                "  run .ac dec 10 1Hz 100kHz    - Run AC Frequency Sweep & ASCII Bode Plot",
+                "  run .tran 1u 10m             - Run Transient Simulation with nonlinear companion models",
+                "  run .four 1kHz V(out) 10m    - Run Fourier Analysis and calculate Total Harmonic Distortion (THD %)",
+                "  export spice [name]          - Export netlist to standard SPICE .cir file",
                 "  list / clear                 - Show or reset netlist",
             ])
         elif self.mode == "NUMERICAL":
@@ -360,13 +381,10 @@ class TerminusEngineBridge:
             return f"[green]Saved dynamic model to:[/green] [bold]{saved_path}[/bold] ({len(self.dynamic_diagram.blocks)} blocks, {len(self.dynamic_diagram.connections)} wires)"
 
         elif self.mode == "CIRCUIT":
-            name = name or "circuit"
-            lines = [f"# Terminus Circuit Netlist - {time.ctime()}"]
-            for c in self.circuit_netlist.components.values():
-                val = getattr(c, 'value', getattr(c, 'dc', ''))
-                lines.append(f"{c.name} {' '.join(c.nodes)} {val}")
-            saved_path = self.storage.save_file("CIRCUIT", name, "\n".join(lines))
-            return f"[green]Saved circuit netlist to:[/green] [bold]{saved_path}[/bold] ({len(self.circuit_netlist.components)} components)"
+            name = name or self.circuit_netlist.name or "circuit"
+            spice_content = self.circuit_netlist.export_spice()
+            saved_path = self.storage.save_file("CIRCUIT", name, spice_content)
+            return f"[green]Saved SPICE circuit netlist to:[/green] [bold]{saved_path}[/bold] ({len(self.circuit_netlist.components)} components)"
 
         elif self.mode == "NUMERICAL":
             name = name or "workspace"
@@ -403,11 +421,11 @@ class TerminusEngineBridge:
 
         elif self.mode == "CIRCUIT":
             path, data = self.storage.load_file("CIRCUIT", name)
-            self.circuit_netlist.clear()
-            for l in str(data).splitlines():
-                if l.strip() and not l.startswith("#"):
-                    CircuitParser.parse_command(self.circuit_netlist, f"add {l.strip()}")
-            return f"[green]Loaded circuit netlist from:[/green] [bold]{path}[/bold]"
+            parsed_netlist, directives = CircuitParser.parse_spice_netlist(str(data))
+            parsed_netlist.name = Path(path).stem
+            self.circuit_netlist = parsed_netlist
+            self.circuit_solver = MNASolver(self.circuit_netlist)
+            return f"[green]Loaded circuit netlist from:[/green] [bold]{path}[/bold] ({len(self.circuit_netlist.components)} components, {len(directives)} directives)"
 
         elif self.mode == "NUMERICAL":
             path, data = self.storage.load_file("NUMERICAL", name)
@@ -423,38 +441,43 @@ class TerminusEngineBridge:
         elif self.mode == "EMBEDDED":
             path, data = self.storage.load_file("EMBEDDED", name)
             count = self.mcu.load_program(str(data))
-            return f"[green]Loaded MCU program from:[/green] [bold]{path}[/bold] ({count} instructions assembled)"
+            return f"[green]Loaded embedded program from:[/green] [bold]{path}[/bold] ({count} words)"
 
-        return f"Loaded {name}"
+        return "File loaded."
 
     def _cmd_file_list(self) -> str:
         files = self.storage.list_files(self.mode)
         mode_dir = self.storage.get_mode_dir(self.mode)
-        lines = [f"[bold cyan]=== Stored Files in {mode_dir} ({len(files)} files) ===[/bold cyan]"]
+        lines = [
+            f"[bold cyan]Files in {self.mode} Storage ({mode_dir}):[/bold cyan]"
+        ]
         if not files:
-            lines.append(f"  [dim](No files saved yet. Use 'file save <name>' to save current {self.mode.lower()} file)[/dim]")
+            lines.append("  [dim](No files saved yet. Use 'file save <name>' to save current workspace)[/dim]")
         else:
-            lines.append(f"  {'Filename':<32} {'Size':<12} {'Last Modified':<20}")
-            lines.append("  " + "─" * 66)
             for f in files:
-                lines.append(f"  [bold green]{f['name']:<32}[/bold green] {f['size_formatted']:<12} [dim]{f['modified']}[/dim]")
+                fname = f.get("name", "file")
+                sz_str = f.get("size_formatted", "")
+                mtime = f.get("modified", "")
+                lines.append(f"  * [bold white]{fname:30s}[/bold white]  [dim]{sz_str:>10s}  |  {mtime}[/dim]")
         return "\n".join(lines)
 
     def _cmd_file_storage_summary(self) -> str:
-        data = self.storage.get_summary_table_data()
+        paths = self.storage.get_all_paths()
         lines = [
-            f"[bold cyan]=== Terminus Project Storage Hierarchy ===[/bold cyan]",
-            f"Root Location: [bold yellow]{self.storage.root_dir}[/bold yellow]\n",
-            f"  {'Mode':<18} {'Folder Name':<20} {'Default Ext':<14} {'File Count':<10}",
-            "  " + "─" * 64,
+            "[bold cyan]=== Terminus Central Storage System ===[/bold cyan]",
+            f"Root Base Directory : [bold green]{paths['ROOT']}[/bold green]",
+            f"Circuit Storage     : {paths['CIRCUIT']}",
+            f"Numerical Storage   : {paths['NUMERICAL']}",
+            f"Dynamic Storage     : {paths['DYNAMIC']}",
+            f"Digital Storage     : {paths['DIGITAL']}",
+            f"Embedded Storage    : {paths['EMBEDDED']}",
+            f"Exports Storage     : {paths['EXPORTS']}",
         ]
-        for mode_key, folder_name, count, ext in data:
-            lines.append(f"  [bold magenta]{mode_key:<18}[/bold magenta] {folder_name:<20} {ext:<14} [green]{count} file(s)[/green]")
         return "\n".join(lines)
 
     def _cmd_export(self, args: List[str]) -> str:
+        out_name = "export_simulation"
         fmt = "csv"
-        out_name = f"export_{int(time.time())}"
         for a in args:
             if a.startswith("--format="):
                 fmt = a.split("=")[1].lower()
@@ -481,42 +504,197 @@ class TerminusEngineBridge:
         return f"[green]Exported simulation data to:[/green] [bold]{saved_path}[/bold]"
 
     def _cmd_ipc(self, args: List[str]) -> str:
-        if not args:
-            return "Usage: ipc <start|set|get|list> [args]"
-        sub = args[0].lower()
-        if sub == "start":
-            if self.ipc_router is None:
-                self.ipc_router = IPCRouter()
-                self.ipc_router.start_background()
-                return "IPC Daemon started on 127.0.0.1:8765"
-            return "IPC Daemon is already running."
-        elif sub == "set" and len(args) >= 3:
-            name = args[1]
-            val = args[2]
-            ok = self.ipc_client.set_variable(name, val)
-            return f"IPC Set '{name}' = {val} ({'OK' if ok else 'Failed'})"
-        elif sub == "get" and len(args) >= 2:
-            name = args[1]
-            val = self.ipc_client.get_variable(name)
-            return f"IPC Get '{name}' -> {val}"
-        return "Unknown IPC sub-command."
+        return self._handle_session_command("session " + " ".join(args), ["session"] + args)
+
+    # --- High-Capacity Multi-Terminal Session Network Handlers ---
+    def _handle_session_command(self, line: str, tokens: List[str]) -> str:
+        if len(tokens) < 2:
+            return (
+                "[bold cyan]=== Multi-Terminal Session Networking (500+ Terminals) ===[/bold cyan]\n"
+                "  session list / ls            - Discover and list all active terminals on LAN/network\n"
+                "  session info                 - View current session number, assigned IP:port, and linked signals\n"
+                "  session server start [port]  - Start high-capacity async IPC router server (defaults to 8765)\n"
+                "  session server stop          - Stop local IPC router server\n"
+                "  session connect <ip:port>    - Connect this terminal session to a network router\n"
+                "  session exec <id> <cmd>      - Remotely execute command on terminal Session #<id>\n"
+                "  session link <sig> <id>.<sig>- Bridge and live-stream signal from Session #<id>\n"
+                "  session push <sig> <val>     - Push signal value across network to all linked sessions\n"
+                "  session broadcast <msg>      - Broadcast message/variable across all terminals\n"
+                "  session limits / network     - Display architectural network capacity & scalability details\n"
+            )
+
+        sub = tokens[1].lower()
+
+        if sub in ("list", "ls"):
+            sessions = self.ipc_client.list_sessions_sync()
+            if not sessions:
+                if not self.ipc_client.is_connected:
+                    return (
+                        "[yellow]This terminal is not connected to an IPC Router.[/yellow]\n"
+                        "To host a multi-terminal network on this computer: [bold]session server start[/bold]\n"
+                        "To connect to an existing router: [bold]session connect 127.0.0.1:8765[/bold]"
+                    )
+                return "[yellow]No other active sessions detected on network router.[/yellow]"
+
+            lines = [
+                f"[bold cyan]=== Active Networked Terminal Sessions ({len(sessions)} Active / Max 500+) ===[/bold cyan]",
+                f"{'Session #':<11}{'Host / IP':<22}{'Mode':<14}{'Active File':<22}{'Uptime':<10}"
+            ]
+            lines.append("-" * 79)
+            for s in sessions:
+                sid = s.get("session_id", "?")
+                is_self = " (Current)" if sid == self.ipc_client.session_id else ""
+                host_ip = f"{s.get('hostname', 'host')}:{s.get('port', 0)}"
+                mode = s.get("mode", "Circuit")
+                active = s.get("active_file", "untitled")
+                uptime = f"{time.time() - s.get('connected_at', time.time()):.0f}s"
+                lines.append(f"#{sid:<10}{host_ip:<22}{mode:<14}{active:<22}{uptime:<10}{is_self}")
+            return "\n".join(lines)
+
+        elif sub == "info":
+            if not self.ipc_client.is_connected:
+                return "[yellow]Not currently connected to any IPC Network Router. (Run 'session server start' or 'session connect <ip:port>')[/yellow]"
+            lines = [
+                "[bold cyan]=== Current Terminal Session Network Profile ===[/bold cyan]",
+                f"Assigned Session Number: [bold green]Session #{self.ipc_client.session_id}[/bold green]",
+                f"Client UUID            : {self.ipc_client.client_uuid}",
+                f"Connected Router       : {self.ipc_client.host}:{self.ipc_client.port}",
+                f"Current Operating Mode : {self.mode}",
+                f"Linked Input Signals   : {len(self.ipc_client.linked_signals)} active",
+            ]
+            for k, v in self.ipc_client.linked_signals.items():
+                lines.append(f"  * [bold]{k}[/bold] = {v}")
+            return "\n".join(lines)
+
+        elif sub == "server":
+            if len(tokens) >= 3 and tokens[2].lower() == "start":
+                port = int(tokens[3]) if len(tokens) > 3 else 8765
+                ipc_router_instance.port = port
+                ipc_router_instance.start()
+                # Auto-connect local client to router
+                self.ipc_client = ipc_client_instance
+                self.ipc_client.set_command_executor(self.execute_command)
+                self.ipc_client.connect(mode=self.mode, active_file=self.circuit_netlist.name)
+                return f"[green]High-Capacity IPC Router Server started on 0.0.0.0:{port}[/green] (Ready for up to 500+ connections). Current terminal registered as [bold]Session #{self.ipc_client.session_id}[/bold]."
+            elif len(tokens) >= 3 and tokens[2].lower() == "stop":
+                ipc_router_instance.stop()
+                return "[green]IPC Router Server stopped.[/green]"
+            return "Usage: session server start [port] | session server stop"
+
+        elif sub == "connect":
+            if len(tokens) < 3:
+                raise ValueError("Usage: session connect <ip:port> [requested_session_id]")
+            endpoint = tokens[2]
+            req_id = int(tokens[3]) if len(tokens) > 3 else None
+            host = endpoint.split(":")[0] if ":" in endpoint else endpoint
+            port = int(endpoint.split(":")[1]) if ":" in endpoint else 8765
+
+            self.ipc_client = IPCClient(host=host, port=port)
+            self.ipc_client.set_command_executor(self.execute_command)
+            ok = self.ipc_client.connect(mode=self.mode, active_file=self.circuit_netlist.name, requested_session_id=req_id)
+            if ok:
+                return f"[green]Successfully connected to {host}:{port}[/green] as [bold]Session #{self.ipc_client.session_id}[/bold] (UUID: {self.ipc_client.client_uuid[:8]})."
+            raise ConnectionError(f"Could not connect to IPC Router at {host}:{port}. Is the router server running?")
+
+        elif sub == "exec":
+            if len(tokens) < 4:
+                raise ValueError("Usage: session exec <target_session_id> <command...>")
+            target_sid = int(tokens[2])
+            rem_cmd = " ".join(tokens[3:])
+            res = self.ipc_client.remote_exec_sync(target_sid, rem_cmd)
+            if res.get("status") == "dispatched":
+                return f"[green]Dispatched command to Session #{target_sid}:[/green] '{rem_cmd}'"
+            return f"[red]Remote execution response:[/red] {res}"
+
+        elif sub == "link":
+            if len(tokens) < 4:
+                raise ValueError("Usage: session link <local_signal> <target_session_id>.<target_signal>")
+            local_sig = tokens[2]
+            target_spec = tokens[3]
+            if "." not in target_spec:
+                raise ValueError("Target must be in format <session_id>.<signal_name>, e.g. 'session link V(out) 2.Vin'")
+            tgt_sid_str, tgt_sig = target_spec.split(".", 1)
+            tgt_sid = int(tgt_sid_str)
+            res = self.ipc_client.link_signal_sync(local_sig, tgt_sid, tgt_sig)
+            return f"[green]Signal Link Established:[/green] Current Session #{self.ipc_client.session_id}:{local_sig} -> Session #{tgt_sid}:{tgt_sig}"
+
+        elif sub == "push":
+            if len(tokens) < 4:
+                raise ValueError("Usage: session push <signal_name> <value>")
+            sig_name = tokens[2]
+            val = parse_eng_unit(tokens[3])
+            self.ipc_client.push_signal_sync(sig_name, val)
+            return f"[green]Pushed signal:[/green] {sig_name} = {val}"
+
+        elif sub == "broadcast":
+            if len(tokens) < 3:
+                raise ValueError("Usage: session broadcast <message>")
+            bmsg = " ".join(tokens[2:])
+            self.ipc_client.broadcast_sync(bmsg)
+            return f"[green]Broadcast sent to all terminals:[/green] '{bmsg}'"
+
+        elif sub in ("limits", "network", "scaling"):
+            return (
+                "[bold cyan]=== Network Capacity & 500+ Terminal Session Architecture ===[/bold cyan]\n"
+                "1. [bold white]Socket Descriptor Capacity[/bold white]:\n"
+                "   Uses Python asyncio Proactor (IOCP on Windows / Epoll on Linux) supporting 10,000+ non-blocking sockets.\n"
+                "   No select() 64/1024 FD limit bottlenecks.\n"
+                "2. [bold white]Low-Latency Transmission[/bold white]:\n"
+                "   TCP_NODELAY enabled to eliminate 40ms Nagle buffering delay for real-time signal streaming.\n"
+                "3. [bold white]Scalability Bottlenecks & Mitigations[/bold white]:\n"
+                "   * OS Max Open Files: Configurable via ulimit -n / registry max user sockets.\n"
+                "   * Serialization Throughput: Compact UTF-8 JSON Lines streaming (<150 bytes per signal packet).\n"
+                "   * Multi-Computer LAN Discovery: Subnet broadcast TCP router binding on 0.0.0.0 allows any laptop on the Wi-Fi/Ethernet to join by IP:Port.\n"
+                "   * Collision-Proof Session Numbers: Atomic thread-safe session allocator ensures unique Session IDs #1..#500+ across distinct devices.\n"
+            )
+
+        raise ValueError(f"Unknown session command 'session {sub}'. Run 'session' for help.")
 
     # --- Circuit Handlers ---
     def _handle_circuit(self, line: str, tokens: List[str]) -> str:
         first = tokens[0].lower()
 
+        # 1. Circuit Library Browser
+        if first == "library":
+            return self._cmd_circuit_library(tokens[1:])
+
+        # 2. Design Rule Checking & Diagnostics
+        if first in ("check", "diagnose", "drc"):
+            return self._cmd_circuit_diagnostics()
+
+        # 3. Component & Model Inspector
+        if first in ("inspect", "details", "info"):
+            if len(tokens) < 2:
+                raise ValueError("Usage: inspect <component_name_or_model> (e.g. inspect R1, inspect 1N4148, inspect IRF540N)")
+            return self._cmd_circuit_inspect(tokens[1])
+
+        # 4. Probe / Measure
+        if first in ("probe", "measure", "scope"):
+            if len(tokens) < 2:
+                raise ValueError("Usage: probe <node_or_trace> (e.g. probe out, probe V(out))")
+            return self._cmd_circuit_probe(tokens[1])
+
+        # 5. Export SPICE
+        if first == "export" and len(tokens) >= 2 and tokens[1].lower() == "spice":
+            name = tokens[2] if len(tokens) > 2 else self.circuit_netlist.name
+            spice_code = self.circuit_netlist.export_spice()
+            path = self.storage.save_file("CIRCUIT", f"{name}.cir", spice_code)
+            return f"[green]Exported SPICE netlist to:[/green] [bold]{path}[/bold]"
+
+        # Standard Netlist operations
         if first in ("add", "connect", "remove", "delete", "set", "list", "show", "clear"):
             res = CircuitParser.parse_command(self.circuit_netlist, line)
+            self.circuit_solver = MNASolver(self.circuit_netlist)
             t = res.get("type")
             if t == "add":
-                return f"[green]Added component:[/green] {res.get('name')}"
+                return f"[green]Added component:[/green] {res.get('name')} -> {res.get('component')}"
             elif t == "connect":
                 return f"[green]Connected:[/green] {' | '.join(res.get('endpoints', []))}"
             elif t == "list":
                 comps = res.get("components", [])
                 if not comps:
                     return "Netlist is empty."
-                return "[bold cyan]Active Netlist Components:[/bold cyan]\n" + "\n".join(f"  {c}" for c in comps)
+                return f"[bold cyan]Active Netlist: {self.circuit_netlist.name} ({len(comps)} components)[/bold cyan]\n" + "\n".join(f"  {c}" for c in comps)
             elif t == "clear":
                 return "Circuit netlist cleared."
             elif t == "set":
@@ -532,10 +710,139 @@ class TerminusEngineBridge:
 
         raise ValueError(f"Unknown circuit command '{line}'. Type 'help' for options.")
 
+    def _cmd_circuit_library(self, args: List[str]) -> str:
+        """Browse classified LTspice component library."""
+        if not args:
+            cats = circuit_catalog.get_all_categories()
+            lines = [
+                "[bold cyan]=== LTspice Classified Component Library ===[/bold cyan]",
+                "Available Categories:"
+            ]
+            for c in cats:
+                comps = circuit_catalog.list_components_by_category(c)
+                lines.append(f"  * [bold yellow]{c:<22}[/bold yellow] ({len(comps)} components) - e.g. {', '.join(spec.name for spec in comps[:3])}")
+            lines.append("\nCommands:")
+            lines.append("  library <category>           - List all models in a category")
+            lines.append("  library search <query>       - Search by keyword or model name")
+            lines.append("  inspect <model_or_comp>      - Inspect pins, SPICE syntax, and parameters")
+            return "\n".join(lines)
+
+        sub = args[0].lower()
+        if sub in ("search", "find"):
+            if len(args) < 2:
+                raise ValueError("Usage: library search <query>")
+            q = " ".join(args[1:])
+            results = circuit_catalog.search_components(q)
+            if not results:
+                return f"[yellow]No components found matching '{q}'.[/yellow]"
+            lines = [f"[bold cyan]Search Results for '{q}' ({len(results)} found):[/bold cyan]"]
+            for s in results:
+                lines.append(f"  * [bold green]{s.name:<16}[/bold green] [[dim]{s.category}[/dim]] - {s.description}")
+            return "\n".join(lines)
+
+        category = args[0]
+        comps = circuit_catalog.list_components_by_category(category)
+        if not comps:
+            # Try searching as model name
+            spec = circuit_catalog.get_spec(category)
+            if spec:
+                return self._cmd_circuit_inspect(spec.name)
+            return f"[yellow]Category '{category}' not found. Run 'library' to see all categories.[/yellow]"
+
+        lines = [f"[bold cyan]=== Library: {category} ({len(comps)} items) ===[/bold cyan]"]
+        for s in comps:
+            pins_str = ", ".join(s.pins)
+            lines.append(f"  * [bold green]{s.name:<15}[/bold green] Pins: [{pins_str}]")
+            lines.append(f"    [dim]{s.description}[/dim]")
+            if s.example_usage:
+                lines.append(f"    [cyan]Example:[/cyan] {s.example_usage}")
+        return "\n".join(lines)
+
+    def _cmd_circuit_diagnostics(self) -> str:
+        """Runs Design Rule Checking (DRC) on the active netlist."""
+        checker = CircuitDiagnosticChecker(self.circuit_netlist)
+        report = checker.diagnose()
+
+        lines = [
+            f"[bold cyan]=== Circuit Design Rule & Topology Check ({self.circuit_netlist.name}) ===[/bold cyan]",
+            f"Components: {report.total_components}  |  Nodes: {report.total_nodes}  |  Status: {'[bold green]PASSED[/bold green]' if report.is_valid else '[bold red]FAILED[/bold red]'}"
+        ]
+
+        if not report.issues:
+            lines.append("\n[green]All Design Rule Checks passed! No floating nodes or singular matrix hazards found.[/green]")
+        else:
+            lines.append("\nDiagnostic Issues Detected:")
+            for issue in report.issues:
+                color = "red" if issue.level == CircuitDiagnosticLevel.ERROR else ("yellow" if issue.level == CircuitDiagnosticLevel.WARNING else "blue")
+                lines.append(f"  [{color}][{issue.level.value}][/{color}] [bold]{issue.category}:[/bold] {issue.message}")
+                if issue.suggested_fix:
+                    lines.append(f"    [dim]Fix:[/dim] {issue.suggested_fix}")
+
+        return "\n".join(lines)
+
+    def _cmd_circuit_inspect(self, target_name: str) -> str:
+        """Inspects an instance or catalog component."""
+        uname = target_name.upper()
+        # Check active netlist first
+        if uname in self.circuit_netlist.components:
+            comp = self.circuit_netlist.components[uname]
+            pins = self.circuit_netlist.pin_map.get(uname, comp.nodes)
+            lines = [
+                f"[bold cyan]=== Circuit Component Instance: {uname} ===[/bold cyan]",
+                f"Type       : {comp.__class__.__name__}",
+                f"Connected  : {pins}",
+            ]
+            for attr in ("value", "dc", "ac_mag", "ac_phase", "waveform_type", "model_name", "expression", "gain", "beta_f", "vto"):
+                if hasattr(comp, attr):
+                    lines.append(f"{attr:<11}: {getattr(comp, attr)}")
+            return "\n".join(lines)
+
+        # Check catalog spec
+        spec = circuit_catalog.get_spec(uname)
+        if spec:
+            lines = [
+                f"[bold cyan]=== LTspice Component Spec: {spec.name} ===[/bold cyan]",
+                f"Category   : {spec.category}",
+                f"Description: {spec.description}",
+                f"SPICE Type : {spec.spice_model_type}",
+                f"Pins       : {', '.join(spec.pins)}",
+                f"Defaults   : {spec.default_params}",
+            ]
+            if spec.model_statement:
+                lines.append(f"SPICE Model: {spec.model_statement}")
+            if spec.example_usage:
+                lines.append(f"Example    : {spec.example_usage}")
+            return "\n".join(lines)
+
+        raise KeyError(f"Neither component instance nor library model '{target_name}' was found.")
+
+    def _cmd_circuit_probe(self, trace_name: str) -> str:
+        """Probes a specific node voltage or branch current from the last simulation."""
+        if not self.last_circuit_sim:
+            raise ValueError("No simulation results available. Run a simulation first (e.g. 'run .tran 1u 10m').")
+
+        norm = trace_name if trace_name.startswith("V(") or trace_name.startswith("I(") else f"V({trace_name})"
+        wf = self.last_circuit_sim.get_waveform(norm)
+        if not wf:
+            # Check operating point dictionary
+            if norm in self.last_circuit_sim.op_results:
+                return f"[bold cyan]Probe {norm}:[/bold cyan] [bold green]{self.last_circuit_sim.op_results[norm]:.6g} V[/bold green]"
+            avail = list(self.last_circuit_sim.waveforms.keys()) + list(self.last_circuit_sim.op_results.keys())
+            raise KeyError(f"Trace '{norm}' not found. Available traces: {', '.join(avail)}")
+
+        plot_str = AsciiPlotter.plot(wf.x, wf.y, title=f"Probe: {norm}", x_label=self.last_circuit_sim.x_label, y_label=wf.y_unit)
+        stats = (
+            f"[bold cyan]Trace Metrics for {norm}:[/bold cyan]\n"
+            f"  Max: {wf.max:.4g} {wf.y_unit}  |  Min: {wf.min:.4g} {wf.y_unit}  |  Peak-to-Peak: {wf.peak_to_peak:.4g} {wf.y_unit}  |  RMS: {wf.rms:.4g} {wf.y_unit}"
+        )
+        return f"{stats}\n\n{plot_str}"
+
     def _run_circuit_simulation(self, spec: str) -> str:
         parts = spec.split()
         if not parts:
             raise ValueError("No simulation specified. Example: 'run .ac dec 10 1Hz 100kHz'")
+
+        self.circuit_solver = MNASolver(self.circuit_netlist)
 
         topo_diagram = SchematicVisualizer.render_circuit_topology(
             self.circuit_netlist.components,
@@ -615,7 +922,18 @@ class TerminusEngineBridge:
 
             return f"{topo_diagram}\n\n{res.summary()}\n\n{plot_str}"
 
-        raise ValueError(f"Unknown simulation command '{sim_cmd}'")
+        elif sim_cmd == ".four":
+            if len(parts) < 4:
+                raise ValueError("Usage: run .four <fundamental_freq> <trace_name> <t_stop>")
+            freq_val = parse_eng_unit(parts[1])
+            tname = parts[2]
+            tstop_val = parse_eng_unit(parts[3])
+
+            res = self.circuit_solver.solve_four(freq_val, tname, tstop_val)
+            self.last_circuit_sim = res
+            return f"{topo_diagram}\n\n{res.summary()}"
+
+        raise ValueError(f"Unknown simulation command '{sim_cmd}'. Supported: .op, .dc, .ac, .tran, .four")
 
     # --- Numerical Handlers ---
     def _handle_numerical(self, line: str, tokens: List[str]) -> str:
