@@ -135,9 +135,9 @@ class StorageManager:
         if not mode_dir.exists():
             return results
 
-        # For EMBEDDED: also inspect project folders
+        # For EMBEDDED and NUMERICAL (MATLAB): also inspect project folders
         m_upper = mode.upper().strip()
-        if m_upper == "EMBEDDED":
+        if m_upper in ("EMBEDDED", "NUMERICAL"):
             for item in sorted(mode_dir.glob("**/*")):
                 if item.is_file():
                     stat = item.stat()

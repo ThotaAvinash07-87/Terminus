@@ -19,10 +19,15 @@ from .transforms import (
     fourier_transform,
     inverse_fourier_transform,
 )
+from .dsp_engine import DSPSignalEngine
+from .matlab_manager import MatlabProjectManager, MatlabProjectFile
 
 __all__ = [
     "NumericalASTParser",
     "NumericalWorkspace",
+    "DSPSignalEngine",
+    "MatlabProjectManager",
+    "MatlabProjectFile",
     "matrix_det",
     "matrix_inv",
     "matrix_rank",

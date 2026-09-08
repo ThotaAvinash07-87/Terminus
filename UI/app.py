@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 
@@ -17,6 +18,7 @@ from CORE.ipc_router import (
     IPCRouter, IPCClient, TerminalSessionInfo, CrossModeSignalValidator,
     CrossModeValidationResult, ipc_router_instance, ipc_client_instance
 )
+from CORE.figure_renderer import TerminusFigure, TerminalImagePreviewer, TechnicalReportMetrics, active_figure
 from CORE.storage_manager import StorageManager
 from CORE.lib_importer import CustomModelImporter, MCUSpecification
 from CORE.universal_exporter import UniversalStandardExporter
@@ -34,6 +36,8 @@ from Engines.Circuit.diagnostics import CircuitDiagnosticChecker, CircuitDiagnos
 
 from Engines.Numerical.parser import NumericalWorkspace, NumericalASTParser
 from Engines.Numerical.transforms import TransferFunction, DiscreteTransferFunction
+from Engines.Numerical.dsp_engine import DSPSignalEngine
+from Engines.Numerical.matlab_manager import MatlabProjectManager, MatlabProjectFile
 
 from Engines.Dynamic_System.blocks import (
     Block, IntegratorBlock, DerivativeBlock, TransferFunctionBlock, StateSpaceBlock,
@@ -119,6 +123,8 @@ class TerminusEngineBridge:
 
         self.numerical_workspace = NumericalWorkspace()
         self.numerical_parser = NumericalASTParser(self.numerical_workspace)
+        self.matlab_proj = MatlabProjectManager("SignalWorkspace")
+        self.figure = active_figure
 
         self.dynamic_diagram = SystemDiagram()
         self.dynamic_simulator = DynamicSystemSimulator(self.dynamic_diagram)
@@ -220,6 +226,10 @@ class TerminusEngineBridge:
         if first == "ipc":
             return self._cmd_ipc(tokens[1:])
 
+        # Universal High-Resolution PNG Figure Generator & In-Terminal Truecolor Previewer
+        if first in ("png", "figure", "preview", "image", "render"):
+            return self._handle_figure_image_command(line, tokens)
+
         # Route to mode-specific handler
         if self.mode == "CIRCUIT":
             return self._handle_circuit(line, tokens)
@@ -254,6 +264,9 @@ class TerminusEngineBridge:
             "  session exec <id> <cmd>      - Remotely execute command on terminal Session #<id>",
             "  session link <sig> <id>.<sig>- Bridge and live-stream signals across terminal sessions",
             "  session broadcast <msg>      - Broadcast message/variable across all terminals",
+            "  png [filename.png]           - Universal: Export active plot/scope/circuit to high-res PNG & Truecolor terminal preview",
+            "  preview <filename.png>       - Universal: Render 24-bit Truecolor ANSI graphic preview in terminal",
+            "  figure clear / reset         - Universal: Clear active figure canvas and subplots",
             "  export [name] [--format=csv] - Export last simulation results to Exports/ folder",
         ]
         if self.mode == "CIRCUIT":
@@ -272,18 +285,26 @@ class TerminusEngineBridge:
                 "  run .ac dec 10 1Hz 100kHz    - Run AC Frequency Sweep & ASCII Bode Plot",
                 "  run .tran 1u 10m             - Run Transient Simulation with nonlinear companion models",
                 "  run .four 1kHz V(out) 10m    - Run Fourier Analysis and calculate Total Harmonic Distortion (THD %)",
+                "  png [circuit_plot.png]       - Export circuit simulation to high-res PNG + Truecolor terminal preview",
                 "  export spice [name]          - Export netlist to standard SPICE .cir file",
                 "  list / clear                 - Show or reset netlist",
             ])
         elif self.mode == "NUMERICAL":
             help_texts.extend([
-                "\nNumerical Commands (MATLAB-like):",
-                "  A = [1 2; 3 4]               - Matrix definition",
-                "  inv(A), det(A), eig(A)       - Linear algebra",
-                "  H = tf([1], [1, 2, 1])       - Continuous Transfer Function H(s)",
-                "  bode(H)                      - ASCII Bode plot",
-                "  step(H)                      - Step response",
-                "  whos / clear                 - Variable introspection",
+                "\nMATLAB & Signal Processing (DSP) Workbench Commands:",
+                "  project <name>               - Create/switch MATLAB project directory in Documents/Terminus Files/Numerical/",
+                "  code / script                - View active MATLAB script with line numbers",
+                "  edit / edit open             - Launch external editor (Notepad/VS Code) on project .m script",
+                "  edit set <code_block>        - Update full MATLAB script code buffer",
+                "  run / run <file.m>           - Execute MATLAB script and evaluate variables & plots",
+                "  t = 0:0.001:1; x = sin(2*pi*50*t) - Vectorized range, array, and expression generation",
+                "  plot(t, x) / stem(n, x)      - Plot continuous waveform or discrete pulses (ASCII + Figure canvas)",
+                "  subplot(r, c, i)             - Set multi-graph grid layout (e.g. subplot(2, 1, 1))",
+                "  bode(H) / step(H)            - Frequency response Bode diagram & Step response",
+                "  butter(...) / firwin(...)    - Digital filter design (Butterworth, Chebyshev, FIR Windowing)",
+                "  psd(x, Fs) / specgram(x, Fs) - Power Spectral Density & Time-Frequency Spectrogram",
+                "  png [fig_name.png]           - Export high-res 300 DPI graphic with technical metric banner & Truecolor preview",
+                "  whos / clear                 - Inspect workspace variables or clear memory",
             ])
         elif self.mode == "DYNAMIC":
             help_texts.extend([
@@ -436,12 +457,9 @@ class TerminusEngineBridge:
             return f"[green]Saved SPICE circuit netlist to:[/green] [bold]{saved_path}[/bold] ({len(self.circuit_netlist.components)} components)"
 
         elif self.mode == "NUMERICAL":
-            name = name or "workspace"
-            lines = [f"# Terminus Numerical Workspace - {time.ctime()}"]
-            for k, v in self.numerical_workspace.variables.items():
-                lines.append(f"{k} = {v}")
-            saved_path = self.storage.save_file("NUMERICAL", name, "\n".join(lines))
-            return f"[green]Saved numerical workspace to:[/green] [bold]{saved_path}[/bold] ({len(self.numerical_workspace.variables)} variables)"
+            proj_name = name or self.matlab_proj.project_name or "SignalWorkspace"
+            ok, msg = self.matlab_proj.save_project(proj_name)
+            return f"[green]{msg}[/green]"
 
         elif self.mode == "DIGITAL":
             name = name or "logic_circuit"
@@ -476,11 +494,12 @@ class TerminusEngineBridge:
             return f"[green]Loaded circuit netlist from:[/green] [bold]{path}[/bold] ({len(self.circuit_netlist.components)} components, {len(directives)} directives)"
 
         elif self.mode == "NUMERICAL":
-            path, data = self.storage.load_file("NUMERICAL", name)
-            for l in str(data).splitlines():
-                if l.strip() and not l.startswith("#"):
-                    self.numerical_parser.execute(l.strip())
-            return f"[green]Loaded numerical workspace from:[/green] [bold]{path}[/bold]"
+            ok, msg = self.matlab_proj.load_project(name)
+            if ok:
+                self.numerical_workspace.clear()
+                self.numerical_parser.execute_script(self.matlab_proj.source_code)
+                return f"[green]{msg}[/green]"
+            raise FileNotFoundError(f"MATLAB Project '{name}' not found in {self.storage.get_mode_dir('NUMERICAL')}")
 
         elif self.mode == "DIGITAL":
             path, data = self.storage.load_file("DIGITAL", name)
@@ -1181,23 +1200,296 @@ class TerminusEngineBridge:
 
         raise ValueError(f"Unknown simulation command '{sim_cmd}'. Supported: .op, .dc, .ac, .tran, .four")
 
-    # --- Numerical Handlers ---
-    def _handle_numerical(self, line: str, tokens: List[str]) -> str:
-        if line.startswith("bode(") and line.endswith(")"):
-            var_name = line[5:-1].strip()
-            obj = self.numerical_workspace.variables.get(var_name)
-            if isinstance(obj, TransferFunction):
-                return obj.render_bode_ascii()
-            raise ValueError(f"Variable '{var_name}' is not a TransferFunction.")
+    # --- Universal High-Resolution PNG Figure & In-Terminal Truecolor Preview Handlers ---
+    def _handle_figure_image_command(self, line: str, tokens: List[str]) -> str:
+        first = tokens[0].lower()
 
+        # 1. Preview existing PNG file
+        if first == "preview" or (len(tokens) > 1 and tokens[1].lower() in ("preview", "view", "show") and any(t.lower().endswith(".png") for t in tokens)):
+            target = tokens[1] if len(tokens) > 1 and tokens[1].lower() != "preview" else (tokens[2] if len(tokens) > 2 else "")
+            if not target:
+                # Find most recent PNG in mode storage
+                mode_dir = self.storage.get_mode_dir(self.mode)
+                pngs = sorted(mode_dir.glob("**/*.png"), key=os.path.getmtime, reverse=True)
+                if not pngs:
+                    return f"[yellow]No PNG files found in {mode_dir}. Use 'png <filename>' to export a figure.[/yellow]"
+                target = str(pngs[0])
+            else:
+                p = Path(target)
+                if not p.exists():
+                    p_mode = self.storage.get_mode_dir(self.mode) / target
+                    if p_mode.exists():
+                        target = str(p_mode)
+                    else:
+                        p_proj = self.storage.get_mode_dir(self.mode) / self.matlab_proj.project_name / target
+                        if p_proj.exists():
+                            target = str(p_proj)
+            return TerminalImagePreviewer.preview_image(target)
+
+        # 2. Figure Management: figure clear / figure reset / subplot
+        if first == "figure":
+            sub = tokens[1].lower() if len(tokens) > 1 else "show"
+            if sub in ("clear", "reset", "new"):
+                self.figure.clear()
+                return "[green]Figure canvas and subplots cleared.[/green]"
+            if sub == "subplot" and len(tokens) >= 5:
+                r, c, idx = int(tokens[2]), int(tokens[3]), int(tokens[4])
+                self.figure.set_subplot_grid(r, c, idx)
+                return f"[green]Active subplot set to:[/green] ({r}x{c}, index {idx})"
+
+        # 3. Export PNG: png [filename.png] / figure save [filename.png]
+        out_name = tokens[1] if (len(tokens) > 1 and tokens[1].lower() not in ("save", "export", "render")) else (tokens[2] if len(tokens) > 2 else "")
+        if not out_name:
+            if self.mode == "NUMERICAL":
+                out_name = f"{self.matlab_proj.project_name}_figure.png"
+            elif self.mode == "CIRCUIT":
+                out_name = f"{self.circuit_netlist.name}_circuit.png"
+            elif self.mode == "DYNAMIC":
+                out_name = f"{self.dynamic_diagram.name}_scopes.png"
+            elif self.mode == "EMBEDDED":
+                out_name = f"{self.sketch_proj.project_name}_telemetry.png"
+            else:
+                out_name = f"{self.mode.lower()}_figure.png"
+
+        if not out_name.lower().endswith(".png"):
+            out_name += ".png"
+
+        # Determine target folder: project directory or mode directory
+        if self.mode == "NUMERICAL":
+            dest_path = self.matlab_proj.get_project_dir() / out_name
+        elif self.mode == "EMBEDDED":
+            dest_path = self.sketch_proj.get_project_dir() / out_name
+        else:
+            dest_path = self.storage.get_mode_dir(self.mode) / out_name
+
+        # Ensure figure has trace data from current mode
+        has_traces = any(sp.traces for sp in self.figure.subplots.values())
+        if not has_traces:
+            self._auto_populate_figure_from_active_mode()
+
+        ok, msg = self.figure.export_to_png(dest_path, dpi=200)
+        if not ok:
+            return f"[bold red]Figure Export Failed:[/bold red] {msg}"
+
+        # Generate Truecolor In-Terminal ANSI preview
+        preview_str = TerminalImagePreviewer.preview_image(dest_path)
+        return (
+            f"[bold green]=== High-Resolution PNG Graphic Generated ===[/bold green]\n"
+            f"  Subsystem Mode : [bold cyan]{self.mode}[/bold cyan]\n"
+            f"  Resolution     : 2400 x 1200 px (300 DPI)\n"
+            f"  Saved Image    : [bold white]{dest_path}[/bold white]\n\n"
+            f"{preview_str}\n"
+            f"[dim]Saved to project directory. Ready for reports, papers, and presentations.[/dim]"
+        )
+
+    def _auto_populate_figure_from_active_mode(self):
+        """Populates self.figure with current mode simulation results if figure is empty."""
+        self.figure.clear()
+        if self.mode == "CIRCUIT" and self.last_circuit_sim and self.last_circuit_sim.waveforms:
+            self.figure.title = f"LTspice Circuit Analysis: {self.circuit_netlist.name}"
+            for name, wf in self.last_circuit_sim.waveforms.items():
+                if name != "V(0)":
+                    self.figure.add_trace(wf.x, wf.y, label=name)
+                    self.figure.metrics = TechnicalReportMetrics.compute_from_waveform(wf.x, wf.y, mode="CIRCUIT", project=self.circuit_netlist.name)
+            self.figure.set_labels(xlabel=self.last_circuit_sim.x_label, ylabel="Voltage (V)")
+
+        elif self.mode == "DYNAMIC" and self.last_dynamic_sim:
+            self.figure.title = f"Simulink Dynamic Model: {self.dynamic_diagram.name}"
+            for name, wf in self.last_dynamic_sim.items():
+                self.figure.add_trace(wf.x, wf.y, label=name)
+                if self.figure.metrics is None:
+                    self.figure.metrics = TechnicalReportMetrics.compute_from_waveform(wf.x, wf.y, mode="DYNAMIC", project=self.dynamic_diagram.name)
+            self.figure.set_labels(xlabel="Time (s)", ylabel="Scope Signal Amplitude")
+
+        elif self.mode == "DIGITAL" and self.last_logic_traces:
+            self.figure.title = f"Digital Logic Timing Diagram: {self.logic_circuit.name}"
+            for name, trace in self.last_logic_traces.items():
+                if trace:
+                    x_vals = [t for t, _ in trace]
+                    y_vals = [1.0 if val == LogicValue.ONE else 0.0 for _, val in trace]
+                    self.figure.add_trace(x_vals, y_vals, label=name, style="step")
+            self.figure.set_labels(xlabel="Time (ns)", ylabel="Logic Level (0/1)")
+
+        elif self.mode == "EMBEDDED":
+            self.figure.title = f"Embedded USB Serial Telemetry: {self.sketch_proj.project_name}"
+            if self.ascii_plotter.channels:
+                for ch_name, vals in self.ascii_plotter.channels.items():
+                    y_arr = np.array(vals)
+                    x_arr = np.arange(len(y_arr))
+                    self.figure.add_trace(x_arr, y_arr, label=ch_name)
+                    if self.figure.metrics is None:
+                        self.figure.metrics = TechnicalReportMetrics.compute_from_waveform(x_arr, y_arr, mode="EMBEDDED", project=self.sketch_proj.project_name)
+            self.figure.set_labels(xlabel="Sample Index", ylabel="Sensor Value")
+
+        elif self.mode == "NUMERICAL":
+            self.figure.title = f"MATLAB Numerical Analysis: {self.matlab_proj.project_name}"
+            # Look for 1D arrays in variables
+            for k, v in self.numerical_workspace.variables.items():
+                if isinstance(v, np.ndarray) and v.ndim == 1 and len(v) > 1:
+                    x_arr = np.arange(len(v))
+                    self.figure.add_trace(x_arr, v, label=k)
+                    self.figure.metrics = TechnicalReportMetrics.compute_from_waveform(x_arr, v, mode="NUMERICAL", project=self.matlab_proj.project_name)
+                    break
+            self.figure.set_labels(xlabel="Index / Time", ylabel="Amplitude")
+
+    # --- MATLAB & Signal Processing Handlers ---
+    def _handle_numerical(self, line: str, tokens: List[str]) -> str:
+        first = tokens[0].lower()
+
+        # 1. Project & Script Management (MATLAB .m workflow)
+        if first in ("project", "script", "code", "edit"):
+            if first in ("code", "script") and (len(tokens) == 1 or tokens[1].lower() in ("show", "view", "cat")):
+                return self.matlab_proj.view_code()
+
+            sub = tokens[1].lower() if len(tokens) > 1 else ("open" if first == "edit" else "show")
+
+            if first == "project" and len(tokens) > 1 and sub not in ("new", "create", "open", "save", "list"):
+                pname = tokens[1]
+                self.matlab_proj.new_project(pname)
+                return f"[green]Created MATLAB project '{pname}'[/green] in {self.matlab_proj.get_project_dir()}"
+
+            if sub in ("new", "create"):
+                pname = tokens[2] if len(tokens) > 2 else "SignalWorkspace"
+                self.matlab_proj.new_project(pname)
+                return f"[green]Created new MATLAB project:[/green] [bold]{pname}[/bold] in {self.matlab_proj.get_project_dir()}"
+
+            if sub in ("open", "external", "launch") or (first == "edit" and len(tokens) == 1):
+                ok, msg = self.matlab_proj.launch_external_editor()
+                return f"[{'green' if ok else 'yellow'}]{msg}[/{'green' if ok else 'yellow'}]"
+
+            if sub in ("set", "paste", "replace"):
+                new_code = line[line.lower().find(sub) + len(sub):].strip()
+                self.matlab_proj.set_content(new_code)
+                return f"[green]Updated MATLAB script buffer[/green] ({len(self.matlab_proj.source_code.splitlines())} lines)."
+
+            if sub == "append":
+                append_txt = line[line.lower().find("append") + 6:].strip()
+                self.matlab_proj.append_content(append_txt)
+                return f"[green]Appended line to MATLAB script[/green] (Total: {len(self.matlab_proj.source_code.splitlines())} lines)."
+
+            if sub == "clear":
+                self.matlab_proj.set_content("")
+                return "MATLAB script buffer cleared."
+
+            # Direct append if 'code <text>'
+            direct_text = line[len(tokens[0]):].strip()
+            self.matlab_proj.append_content(direct_text)
+            return f"[green]Appended line to MATLAB script[/green] Total lines: {len(self.matlab_proj.source_code.splitlines())}"
+
+        # 2. Run Script (.m Execution)
+        if first in ("run", "exec"):
+            target_code = self.matlab_proj.source_code
+            if len(tokens) > 1 and tokens[1].endswith(".m"):
+                f_path = self.matlab_proj.get_project_dir() / tokens[1]
+                if f_path.exists():
+                    with open(f_path, "r", encoding="utf-8") as f:
+                        target_code = f.read()
+
+            logs = self.numerical_parser.execute_script(target_code)
+            out_lines = [f"[bold green]=== Executed MATLAB Script: {self.matlab_proj.project_name} ({len(logs)} statements) ===[/bold green]"]
+            for idx, stmt, res in logs:
+                if str(res).startswith("Error"):
+                    out_lines.append(f"  [bold red]L{idx:>3} | {stmt}[/bold red] -> {res}")
+                else:
+                    res_str = f" = {res}" if res is not None and not isinstance(res, str) else (f": {res}" if res is not None else "")
+                    out_lines.append(f"  [dim]L{idx:>3} |[/dim] [cyan]{stmt}[/cyan]{res_str}")
+
+            # If figure was populated during execution, notify
+            if any(sp.traces for sp in self.figure.subplots.values()):
+                out_lines.append("\n[bold cyan]Figure generated.[/bold cyan] Type [bold green]'png'[/bold green] to render high-res image & in-terminal Truecolor preview.")
+            return "\n".join(out_lines)
+
+        # 3. Subplot Layout: subplot(r, c, i) or subplot r c i
+        if first == "subplot" or line.startswith("subplot(") or line.startswith("subplot "):
+            m = re.search(r'subplot\s*\(?\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)\s*\)?', line)
+            if m:
+                r, c, idx = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                self.figure.set_subplot_grid(r, c, idx)
+                return f"[green]Set active subplot:[/green] Grid {r}x{c} -> Index {idx}"
+
+        # 4. Interactive Plotting: plot(...) and stem(...)
+        if first in ("plot", "stem") or line.startswith("plot(") or line.startswith("stem("):
+            is_stem = first == "stem" or line.startswith("stem(")
+            call_content = line[line.find("(") + 1 : line.rfind(")")].strip() if "(" in line else " ".join(tokens[1:])
+            args = [a.strip() for a in re.split(r'[\s,]+', call_content) if a.strip()]
+
+            ctx = self.numerical_workspace.get_eval_context()
+            ctx["np"] = np
+            eval_builtins = {
+                "float": float, "int": int, "len": len, "range": range, "abs": abs,
+                "max": max, "min": min, "sum": sum, "complex": complex, "bool": bool, "str": str
+            }
+
+            x_arr = None
+            y_arr = None
+            lbl = "Signal"
+
+            if len(args) == 1:
+                val = eval(args[0], {"__builtins__": eval_builtins}, ctx)
+                y_arr = np.asarray(val, dtype=float)
+                x_arr = np.arange(len(y_arr))
+                lbl = args[0]
+            elif len(args) >= 2:
+                v1 = eval(args[0], {"__builtins__": eval_builtins}, ctx)
+                v2 = eval(args[1], {"__builtins__": eval_builtins}, ctx)
+                x_arr = np.asarray(v1, dtype=float)
+                y_arr = np.asarray(v2, dtype=float)
+                lbl = args[1]
+                if len(args) >= 3:
+                    lbl = args[2].strip("'\"")
+
+            if x_arr is not None and y_arr is not None:
+                # Add to high-resolution figure
+                self.figure.add_trace(x_arr, y_arr, label=lbl, style="stem" if is_stem else "-")
+                self.figure.metrics = TechnicalReportMetrics.compute_from_waveform(x_arr, y_arr, mode="MATLAB", project=self.matlab_proj.project_name)
+                
+                # Render ASCII preview in terminal
+                plot_str = AsciiPlotter.plot(x_arr, y_arr, title=f"MATLAB Plot: {lbl}", x_label="Index / Time (s)", y_label="Amplitude")
+                m = self.figure.metrics
+                stats_str = f"  [dim]Vpk: {m.v_peak:.3f}V | Vrms: {m.v_rms:.3f}V | Vpp: {m.v_pp:.3f}V"
+                if m.dominant_freq: stats_str += f" | Peak Freq: {m.dominant_freq:.1f}Hz"
+                if m.thd_pct: stats_str += f" | THD: {m.thd_pct:.2f}%"
+                stats_str += "[/dim]\n  [bold cyan]> Type 'png' to convert to high-res graphic & in-terminal Truecolor preview.[/bold cyan]"
+                return f"{plot_str}\n{stats_str}"
+
+        # 5. Bode & Frequency Response: bode(H) or bode(num, den)
+        if line.startswith("bode(") and line.endswith(")"):
+            inner = line[5:-1].strip()
+            args = [a.strip() for a in inner.split(",") if a.strip()]
+            ctx = self.numerical_workspace.get_eval_context()
+            if len(args) == 1:
+                obj = ctx.get(args[0])
+                if isinstance(obj, TransferFunction):
+                    # Bode response computation
+                    w_arr, mag_db, phase_deg = DSPSignalEngine.bode_response(obj.num, obj.den)
+                    self.figure.clear()
+                    self.figure.set_subplot_grid(2, 1, 1)
+                    self.figure.add_trace(w_arr, mag_db, label="Magnitude", color="#00e5ff")
+                    self.figure.set_labels(title=f"Bode Diagram - Magnitude ({args[0]})", xlabel="Frequency (Hz)", ylabel="Magnitude (dB)")
+                    self.figure.subplots[0].xscale = "log"
+
+                    self.figure.set_subplot_grid(2, 1, 2)
+                    self.figure.add_trace(w_arr, phase_deg, label="Phase", color="#ffab00")
+                    self.figure.set_labels(title="Bode Diagram - Phase", xlabel="Frequency (Hz)", ylabel="Phase (deg)")
+                    self.figure.subplots[1].xscale = "log"
+
+                    ascii_bode = obj.render_bode_ascii()
+                    return f"{ascii_bode}\n\n[dim]Type 'png' to export high-res Bode PNG & in-terminal Truecolor preview.[/dim]"
+                raise ValueError(f"Variable '{args[0]}' is not a TransferFunction. Create with H = tf([1], [1, 2, 1]).")
+
+        # 6. Step & Impulse Response
         if line.startswith("step(") and line.endswith(")"):
             var_name = line[5:-1].strip()
             obj = self.numerical_workspace.variables.get(var_name)
             if isinstance(obj, TransferFunction):
                 wf = obj.step_response()
-                return AsciiPlotter.plot(wf.x, wf.y, title=f"Step Response: {var_name}", x_label="Time (s)", y_label="Amplitude")
+                self.figure.add_trace(wf.x, wf.y, label=f"Step Response: {var_name}")
+                self.figure.metrics = TechnicalReportMetrics.compute_from_waveform(wf.x, wf.y, mode="MATLAB", project=self.matlab_proj.project_name)
+                plot_str = AsciiPlotter.plot(wf.x, wf.y, title=f"Step Response: {var_name}", x_label="Time (s)", y_label="Amplitude")
+                return f"{plot_str}\n\n[dim]Type 'png' to export high-res graphic & in-terminal Truecolor preview.[/dim]"
             raise ValueError(f"Variable '{var_name}' is not a TransferFunction.")
 
+        # 7. Standard MATLAB Line Execution
         val = self.numerical_parser.execute(line)
         if val is None:
             return ""
