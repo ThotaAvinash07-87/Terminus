@@ -235,15 +235,134 @@ class KiCadPCB:
         """Routes a single specific net."""
         return True, f"Routed copper track for net '{net_name}'."
 
-    def render_board_ascii(self) -> str:
+    def import_from_circuit_netlist(self, netlist: Any):
+        """Imports and auto-places circuit components and routes copper traces from a CircuitNetlist."""
+        self.clear()
+        self.name = getattr(netlist, "name", "CircuitPCB")
+        comps = getattr(netlist, "components", {})
+        pin_map = getattr(netlist, "pin_map", {})
+
+        num_comps = len(comps)
+        if num_comps == 0:
+            return
+
+        # Auto-size board based on complexity
+        if num_comps <= 4:
+            self.set_board_size(60.0, 40.0)
+        elif num_comps <= 8:
+            self.set_board_size(80.0, 50.0)
+        elif num_comps <= 16:
+            self.set_board_size(100.0, 70.0)
+        else:
+            self.set_board_size(120.0, 80.0)
+
+        # Categorize components for paper-standard PCB floorplanning
+        sources = []
+        grounded = []
+        passives = []
+
+        for cname, comp in comps.items():
+            cu = cname.upper()
+            pins = pin_map.get(cname, getattr(comp, "nodes", []))
+            if cu.startswith("V") or cu.startswith("I") or "Voltage" in type(comp).__name__ or "Current" in type(comp).__name__:
+                sources.append(cname)
+            elif "0" in pins or "GND" in [str(p).upper() for p in pins]:
+                grounded.append(cname)
+            else:
+                passives.append(cname)
+
+        all_ordered = sources + passives + [g for g in grounded if g not in sources and g not in passives]
+        if not all_ordered:
+            all_ordered = list(comps.keys())
+
+        for idx, ref in enumerate(all_ordered):
+            comp = comps[ref]
+            cu = ref.upper()
+            if cu.startswith("R") or cu.startswith("C") or cu.startswith("L"):
+                fp = "0805"
+            elif cu.startswith("D") or "LED" in cu:
+                fp = "SOD-123"
+            elif cu.startswith("Q"):
+                fp = "SOT-23"
+            elif cu.startswith("U"):
+                fp = "SOIC-8"
+            elif cu.startswith("V") or cu.startswith("I") or cu.startswith("J"):
+                fp = "HDR-1x2"
+            else:
+                fp = "0805"
+
+            # Position calculations (Sources on left, passives in middle, grounded near bottom)
+            if ref in sources:
+                s_idx = sources.index(ref)
+                pos_x = 8.0
+                pos_y = 10.0 + s_idx * 14.0
+            elif ref in grounded and ref not in sources and ref not in passives:
+                g_idx = grounded.index(ref)
+                pos_x = 22.0 + g_idx * 18.0
+                pos_y = self.height_mm - 10.0
+            else:
+                p_idx = passives.index(ref) if ref in passives else idx
+                cols_count = max(1, int((self.width_mm - 30.0) / 16.0))
+                c_c = p_idx % cols_count
+                c_r = p_idx // cols_count
+                pos_x = 22.0 + c_c * 18.0
+                pos_y = 10.0 + c_r * 14.0
+
+            pos_x = max(5.0, min(self.width_mm - 6.0, pos_x))
+            pos_y = max(5.0, min(self.height_mm - 6.0, pos_y))
+
+            val = getattr(comp, "value", getattr(comp, "dc", ""))
+            val_str = str(val) if val else ""
+            self.place_component(ref, pos_x, pos_y, footprint=fp)
+
+        # Auto-route circuit nets between component pads
+        self.autoroute_from_pin_map(pin_map)
+
+    def autoroute_from_pin_map(self, pin_map: Dict[str, List[str]]) -> int:
+        """Auto-routes copper tracks based on pin map / net connections."""
+        self.tracks.clear()
+        net_pads: Dict[str, List[Tuple[float, float]]] = {}
+        for cname, pins in pin_map.items():
+            c_placed = self.components.get(cname.upper())
+            if not c_placed:
+                continue
+            for i, net in enumerate(pins):
+                net_clean = "GND" if str(net) in ("0", "GND", "gnd") else str(net)
+                dx = -1.5 if i == 0 else (1.5 if i == 1 else 0.0)
+                dy = 0.0 if i < 2 else (1.5 if i == 2 else -1.5)
+                pad_pos = (c_placed.x_mm + dx, c_placed.y_mm + dy)
+                net_pads.setdefault(net_clean, []).append(pad_pos)
+
+        cnt = 0
+        for net_name, pads in net_pads.items():
+            if len(pads) < 2:
+                continue
+            layer = "B.Cu" if net_name == "GND" else "F.Cu"
+            for i in range(len(pads) - 1):
+                p1 = pads[i]
+                p2 = pads[i + 1]
+                mid_x = p2[0]
+                mid_y = p1[1]
+                if abs(p1[0] - mid_x) > 0.1:
+                    self.add_track(net_name, p1[0], p1[1], mid_x, mid_y, layer=layer)
+                    cnt += 1
+                if abs(mid_y - p2[1]) > 0.1:
+                    self.add_track(net_name, mid_x, mid_y, p2[0], p2[1], layer=layer)
+                    cnt += 1
+        return cnt
+
+    def render_board_ascii(self, schematic: Optional[KiCadSchematic] = None) -> str:
         """Renders 2D terminal PCB layout canvas."""
+        if not self.tracks and schematic:
+            self.autoroute_netlist(schematic)
         from CORE.ascii_canvas import SchematicVisualizer
         return SchematicVisualizer.render_pcb_board(
             self.width_mm,
             self.height_mm,
             self.components,
             self.tracks,
-            self.vias
+            self.vias,
+            board_title=self.name
         )
 
     def autoroute_netlist(self, schematic: KiCadSchematic) -> int:

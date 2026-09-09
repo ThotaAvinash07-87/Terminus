@@ -3,6 +3,7 @@
 from __future__ import annotations
 import math
 import heapq
+import shutil
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 import numpy as np
 
@@ -620,25 +621,36 @@ class SchematicVisualizer:
         components: Dict[str, Any],
         tracks: List[Any],
         vias: List[Any],
-        grid_cols: int = 50,
-        grid_rows: int = 16
+        grid_cols: Optional[int] = None,
+        grid_rows: Optional[int] = None,
+        board_title: str = ""
     ) -> str:
-        """Renders high-clarity 2D terminal PCB layout canvas with board outline, components, traces, and vias."""
-        canvas = AsciiCanvas(width=grid_cols, height=grid_rows)
-        canvas.draw_box(0, 0, grid_cols, grid_rows, title=f"PCB: {width_mm:.0f}x{height_mm:.0f}mm", as_obstacle=False)
+        """Renders spacious high-clarity 2D terminal PCB layout canvas with board outline, components, pads, traces, and vias."""
+        term_cols, term_rows = shutil.get_terminal_size(fallback=(90, 26))
+        cols = grid_cols if (grid_cols is not None and grid_cols > 0) else max(76, min(140, term_cols - 2))
+        rows = grid_rows if (grid_rows is not None and grid_rows > 0) else max(18, min(40, term_rows - 6))
+
+        canvas = AsciiCanvas(width=cols, height=rows)
+        title_tag = f" PCB: {board_title} ({width_mm:.0f}x{height_mm:.0f}mm) " if board_title else f" PCB: {width_mm:.0f}x{height_mm:.0f}mm "
+        canvas.draw_box(0, 0, cols, rows, title=title_tag, as_obstacle=False)
 
         def to_grid(x_mm: float, y_mm: float) -> Tuple[int, int]:
-            gx = int(1 + (x_mm / max(1.0, width_mm)) * (grid_cols - 3))
-            gy = int(1 + (y_mm / max(1.0, height_mm)) * (grid_rows - 3))
-            return max(1, min(grid_cols - 2, gx)), max(1, min(grid_rows - 2, gy))
+            gx = int(2 + (x_mm / max(1.0, width_mm)) * (cols - 6))
+            gy = int(2 + (y_mm / max(1.0, height_mm)) * (rows - 6))
+            return max(2, min(cols - 3, gx)), max(2, min(rows - 3, gy))
 
-        # 1. Draw routed copper tracks
+        # 1. Draw routed copper tracks (F.Cu Top layer solid lines, B.Cu Bottom layer double lines)
         for t in tracks:
             sx, sy = getattr(t, "start_x_mm", 0), getattr(t, "start_y_mm", 0)
             ex, ey = getattr(t, "end_x_mm", 0), getattr(t, "end_y_mm", 0)
+            layer = getattr(t, "layer", "F.Cu")
             p1 = to_grid(sx, sy)
             p2 = to_grid(ex, ey)
-            canvas.draw_line(p1[0], p1[1], p2[0], p2[1], char="─" if p1[1] == p2[1] else "│" if p1[0] == p2[0] else "╱")
+            if layer == "B.Cu":
+                ch = "═" if p1[1] == p2[1] else "║" if p1[0] == p2[0] else "╳"
+            else:
+                ch = "─" if p1[1] == p2[1] else "│" if p1[0] == p2[0] else "╱"
+            canvas.draw_line(p1[0], p1[1], p2[0], p2[1], char=ch)
 
         # 2. Draw vias
         for v in vias:
@@ -646,19 +658,31 @@ class SchematicVisualizer:
             gx, gy = to_grid(vx, vy)
             canvas.set_char(gx, gy, "◎")
 
-        # 3. Draw component footprints and short labels
+        # 3. Draw component footprints, pads, and observable tags
         for ref, comp in components.items():
             cx = getattr(comp, "x_mm", 0)
             cy = getattr(comp, "y_mm", 0)
             gx, gy = to_grid(cx, cy)
-            tag = ref[:4]
-            canvas.draw_text(max(1, gx - 1), gy, f"[{tag}]")
+
+            val = getattr(comp, "value", "")
+            if not val and hasattr(comp, "footprint_name"):
+                val = getattr(comp, "footprint_name", "")
+            val_short = f":{val}" if val and len(str(val)) <= 6 else ""
+            tag = f"[ {ref}{val_short} ]"
+
+            start_x = max(1, min(cols - len(tag) - 2, gx - len(tag) // 2))
+            canvas.draw_text(start_x, gy, tag)
+
+            if start_x >= 3:
+                canvas.set_char(start_x - 1, gy, "▫")
+            if start_x + len(tag) < cols - 2:
+                canvas.set_char(start_x + len(tag), gy, "▫")
 
         board_art = canvas.render()
         lines = [
             board_art,
-            f"[dim]  * Placed Components: {len(components)} | Routed Tracks: {len(tracks)} | Vias: {len(vias)}[/dim]",
-            f"[dim]  * Layers: F.Cu (Top Red), B.Cu (Bottom Blue), Edge.Cuts (Outline), SilkS (Labels)[/dim]"
+            f"[dim]  • Layers  : F.Cu (Top Copper '─'), B.Cu (Bottom Copper '═'), SilkS (Labels), Edge.Cuts (Outline)[/dim]",
+            f"[dim]  • Board   : {width_mm:.1f} x {height_mm:.1f} mm | Components: {len(components)} | Tracks: {len(tracks)} | Vias: {len(vias)}[/dim]"
         ]
         return "\n".join(lines)
 

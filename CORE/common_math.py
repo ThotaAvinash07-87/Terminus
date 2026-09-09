@@ -221,6 +221,34 @@ class Waveform:
         spectrum = np.fft.rfft(np.real(self.y)) / (n / 2.0)
         return freqs, spectrum
     
+    @property
+    def min(self) -> float:
+        real_y = np.real(self.y)
+        return float(np.min(real_y)) if len(real_y) > 0 else 0.0
+
+    @property
+    def max(self) -> float:
+        real_y = np.real(self.y)
+        return float(np.max(real_y)) if len(real_y) > 0 else 0.0
+
+    @property
+    def mean(self) -> float:
+        real_y = np.real(self.y)
+        return float(np.mean(real_y)) if len(real_y) > 0 else 0.0
+
+    @property
+    def rms(self) -> float:
+        real_y = np.real(self.y)
+        return float(np.sqrt(np.mean(real_y ** 2))) if len(real_y) > 0 else 0.0
+
+    @property
+    def peak_to_peak(self) -> float:
+        return self.max - self.min
+
+    @property
+    def pk_pk(self) -> float:
+        return self.peak_to_peak
+
     def metrics(self) -> Dict[str, float]:
         """Computes key metrics (min, max, mean, rms, pk-pk, thd)."""
         real_y = np.real(self.y)

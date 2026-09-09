@@ -1001,11 +1001,19 @@ class TerminusEngineBridge:
         if first in ("schematic", "paper", "topology"):
             return SchematicVisualizer.render_circuit_topology(self.circuit_netlist.components, self.circuit_netlist.pin_map)
 
-        # 6. Engineering Calculator in Circuit mode
+        # 6. PCB 2D Board Canvas View in Circuit / LTspice mode
+        if first in ("pcb", "board", "layout"):
+            if not self.circuit_netlist.components:
+                return "[yellow]Circuit netlist is empty. Add components first (e.g. 'add R1 10k in out', 'add C1 100n out 0').[/yellow]"
+            pcb = KiCadPCB(name=self.circuit_netlist.name)
+            pcb.import_from_circuit_netlist(self.circuit_netlist)
+            return pcb.render_board_ascii()
+
+        # 7. Engineering Calculator in Circuit mode
         if first in ("calc", "calculate"):
             return self._cmd_kicad_calc(tokens[1:])
 
-        # 7. Export SPICE
+        # 8. Export SPICE
         if first == "export" and len(tokens) >= 2 and tokens[1].lower() == "spice":
             name = tokens[2] if len(tokens) > 2 else self.circuit_netlist.name
             spice_code = self.circuit_netlist.export_spice()
@@ -2543,7 +2551,11 @@ class TerminusEngineBridge:
 
         # 10. PCB 2D Board Canvas View
         if first in ("pcb", "board", "layout"):
-            return self.kicad_proj.pcb.render_board_ascii()
+            if not self.kicad_proj.pcb.components and self.kicad_proj.schematic.components:
+                self.kicad_proj.pcb.import_from_schematic(self.kicad_proj.schematic)
+            if not self.kicad_proj.pcb.tracks and self.kicad_proj.schematic.components:
+                self.kicad_proj.pcb.autoroute_netlist(self.kicad_proj.schematic)
+            return self.kicad_proj.pcb.render_board_ascii(schematic=self.kicad_proj.schematic)
 
         # 11. Electrical Rules Check (ERC)
         if first in ("erc", "rules", "check_erc"):

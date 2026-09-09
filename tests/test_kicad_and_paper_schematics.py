@@ -145,6 +145,13 @@ class TestKiCadAndPaperSchematics(unittest.TestCase):
         res_calc = self.bridge.execute_command("calc filter rc 1k 1u")
         self.assertIn("Cutoff Frequency", res_calc)
 
+        # Check pcb command works in Circuit / LTspice mode too
+        pcb_art = self.bridge.execute_command("pcb")
+        self.assertIn("PCB:", pcb_art)
+        self.assertIn("R1", pcb_art)
+        self.assertIn("C1", pcb_art)
+        self.assertIn("V1", pcb_art)
+
 
 if __name__ == "__main__":
     unittest.main()
