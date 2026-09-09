@@ -23,13 +23,31 @@ class StorageManager:
     """Manages mode-specific file storage, structured naming, and directory lifecycle."""
 
     MODE_DIRECTORIES = {
-        "CIRCUIT": ("Circuit", ".cir"),
-        "NUMERICAL": ("Numerical", ".m"),
-        "DYNAMIC": ("Dynamic_System", ".tmdl"),
-        "DIGITAL": ("Digital_Logic", ".v"),
-        "EMBEDDED": ("Embedded", ".ino"),
+        "LTSPICE": ("LTspice", ".tckt"),
+        "CIRCUIT": ("LTspice", ".tckt"),
+        "MATLAB": ("MATLAB", ".tmat"),
+        "NUMERICAL": ("MATLAB", ".tmat"),
+        "SIMULINK": ("Simulink", ".tmdl"),
+        "DYNAMIC": ("Simulink", ".tmdl"),
+        "XILINX": ("Xilinx", ".tdig"),
+        "DIGITAL": ("Xilinx", ".tdig"),
+        "ARDUINO_IDE": ("Arduino_IDE", ".tembed"),
+        "EMBEDDED": ("Arduino_IDE", ".tembed"),
+        "KICAD": ("KiCad", ".tkcad"),
+        "PCB": ("KiCad", ".tkcad"),
         "EXPORTS": ("Exports", ".csv"),
     }
+
+    # Primary folders to create
+    PRIMARY_FOLDERS = [
+        ("LTspice", ".tckt"),
+        ("MATLAB", ".tmat"),
+        ("Simulink", ".tmdl"),
+        ("Xilinx", ".tdig"),
+        ("Arduino_IDE", ".tembed"),
+        ("KiCad", ".tkcad"),
+        ("Exports", ".csv"),
+    ]
 
     _instance: Optional[StorageManager] = None
 
@@ -68,22 +86,39 @@ class StorageManager:
             return fallback
 
     def _ensure_directory_tree(self) -> None:
-        """Creates mode-specific subdirectories if they do not exist."""
+        """Creates mode-specific subdirectories if they do not exist, migrating legacy names if needed."""
         self.root_dir.mkdir(parents=True, exist_ok=True)
-        for folder_name, _ in self.MODE_DIRECTORIES.values():
+        # Check legacy name migrations
+        legacy_migrations = {
+            "Circuit": "LTspice",
+            "Numerical": "MATLAB",
+            "Dynamic_System": "Simulink",
+            "Digital_Logic": "Xilinx",
+            "Embedded": "Arduino_IDE",
+        }
+        for leg, target_name in legacy_migrations.items():
+            old_p = self.root_dir / leg
+            new_p = self.root_dir / target_name
+            if old_p.exists() and not new_p.exists():
+                try:
+                    old_p.rename(new_p)
+                except Exception:
+                    pass
+
+        for folder_name, _ in self.PRIMARY_FOLDERS:
             folder_path = self.root_dir / folder_name
             folder_path.mkdir(parents=True, exist_ok=True)
 
     def get_mode_dir(self, mode: str) -> Path:
         m = mode.upper().strip()
-        folder_name, _ = self.MODE_DIRECTORIES.get(m, ("Dynamic_System", ".tmdl"))
+        folder_name, _ = self.MODE_DIRECTORIES.get(m, ("Simulink", ".tmdl"))
         target = self.root_dir / folder_name
         target.mkdir(parents=True, exist_ok=True)
         return target
 
     def get_default_ext(self, mode: str) -> str:
         m = mode.upper().strip()
-        _, ext = self.MODE_DIRECTORIES.get(m, ("Dynamic_System", ".tmdl"))
+        _, ext = self.MODE_DIRECTORIES.get(m, ("Simulink", ".tmdl"))
         return ext
 
     def resolve_file_path(self, mode: str, filename: str) -> Path:
@@ -96,23 +131,47 @@ class StorageManager:
         default_ext = self.get_default_ext(mode)
         m_upper = mode.upper().strip()
 
-        # Handle Embedded Arduino-style project directories: Embedded/<ProjectName>/<ProjectName>.ino
-        if m_upper == "EMBEDDED":
+        # Handle KiCad project directories: KiCad/<ProjectName>/<ProjectName>.kicad_pro
+        if m_upper in ("KICAD", "PCB"):
             clean_stem = p.stem
-            # Check if user specified a sub-path like "MyProject/MyProject.ino" or "MyProject/config.h"
             if len(p.parts) > 1:
                 return mode_dir / filename
-            # Check if project folder exists: Embedded/MyProject/MyProject.ino
             proj_dir = mode_dir / clean_stem
             proj_main_file = proj_dir / f"{clean_stem}{p.suffix or default_ext}"
             if proj_main_file.exists():
                 return proj_main_file
-            # Check flat file: Embedded/filename.ino
+            if (mode_dir / filename).exists():
+                return mode_dir / filename
+            return proj_dir / f"{clean_stem}{p.suffix or default_ext}"
+
+        # Handle Embedded Arduino-style project directories: Arduino_IDE/<ProjectName>/<ProjectName>.ino
+        if m_upper in ("EMBEDDED", "ARDUINO_IDE"):
+            clean_stem = p.stem
+            if len(p.parts) > 1:
+                return mode_dir / filename
+            proj_dir = mode_dir / clean_stem
+            proj_main_file = proj_dir / f"{clean_stem}{p.suffix or default_ext}"
+            if proj_main_file.exists():
+                return proj_main_file
             if (mode_dir / filename).exists():
                 return mode_dir / filename
             if not filename.endswith(default_ext) and (mode_dir / f"{filename}{default_ext}").exists():
                 return mode_dir / f"{filename}{default_ext}"
-            # By default for new files in EMBEDDED: create project folder Embedded/<ProjectName>/<ProjectName>.ino
+            return proj_dir / f"{clean_stem}{p.suffix or default_ext}"
+
+        # Handle MATLAB project directories: MATLAB/<ProjectName>/<ProjectName>.m
+        if m_upper in ("NUMERICAL", "MATLAB"):
+            clean_stem = p.stem
+            if len(p.parts) > 1:
+                return mode_dir / filename
+            proj_dir = mode_dir / clean_stem
+            proj_main_file = proj_dir / f"{clean_stem}{p.suffix or default_ext}"
+            if proj_main_file.exists():
+                return proj_main_file
+            if (mode_dir / filename).exists():
+                return mode_dir / filename
+            if not filename.endswith(default_ext) and (mode_dir / f"{filename}{default_ext}").exists():
+                return mode_dir / f"{filename}{default_ext}"
             return proj_dir / f"{clean_stem}{p.suffix or default_ext}"
 
         # Standard resolution for other modes
@@ -135,9 +194,9 @@ class StorageManager:
         if not mode_dir.exists():
             return results
 
-        # For EMBEDDED and NUMERICAL (MATLAB): also inspect project folders
+        # For KiCad, Arduino_IDE, and MATLAB: inspect recursive project folders
         m_upper = mode.upper().strip()
-        if m_upper in ("EMBEDDED", "NUMERICAL"):
+        if m_upper in ("EMBEDDED", "ARDUINO_IDE", "NUMERICAL", "MATLAB", "KICAD", "PCB"):
             for item in sorted(mode_dir.glob("**/*")):
                 if item.is_file():
                     stat = item.stat()

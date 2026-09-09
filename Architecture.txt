@@ -1,62 +1,77 @@
 terminus/
 │
-├── core/                        
-│   ├── ipc_router.py            # Local socket server for cross-terminal communication
-│   ├── ascii_canvas.py          # 2D grid rendering and A* pathfinding for visual wires
-│   └── common_math.py           # Shared utilities used across multiple engines
+├── CORE/                               # Central Core Infrastructure
+│   ├── ipc_router.py                   # High-capacity async IPC router & multi-terminal networking (500+ sessions)
+│   ├── ascii_canvas.py                 # 2D Unicode canvas, paper-style circuit visualizer, Braille plotting & A* routing
+│   ├── common_math.py                  # Engineering unit parsing, engineering notation, and scientific math helpers
+│   ├── storage_manager.py              # Central structured project storage (Documents/Terminus Files/) with custom extensions
+│   ├── universal_exporter.py           # Industry standard exporters (SPICE .cir, Simulink .m, MATLAB .m, Verilog, VHDL, C, HEX)
+│   ├── figure_renderer.py              # Universal 300 DPI PNG generator & 24-bit Truecolor terminal graphic previewer
+│   └── lib_importer.py                 # Custom SPICE .lib/.mod and microcontroller hardware spec importer
 │
-├── engines/                     
-│   ├── circuit/                 # (LTspice-like)
-│   │   ├── components.py        # R, L, C, Diode, Source definitions
-│   │   ├── netlist_parser.py    # Translates text commands into circuit nodes
-│   │   └── mna_solver.py        # Matrix setup and numerical integration
+├── Engines/                            # Computational & Engineering Subsystem Engines
+│   ├── AnalogDevices_LTspice/ (Circuit)# Analog & Mixed-Signal Circuit Simulation Engine
+│   │   ├── components.py               # R, L, C, Diode, BJT, MOSFET, Op-Amp, Voltage/Current source models
+│   │   ├── catalog.py                  # Classified library with 50+ industrial SPICE models (1N4148, 2N3904, IRF540N, etc.)
+│   │   ├── netlist_parser.py           # SPICE netlist syntax parser and command translator
+│   │   ├── mna_solver.py               # Modified Nodal Analysis (MNA), DC OP, DC Sweep, AC Sweep, Transient, Fourier
+│   │   └── diagnostics.py              # Design Rule Checking (DRC) for floating nodes, shorted sources, missing ground
 │   │
-│   ├── numerical/               # (MATLAB-like)
-│   │   ├── parser.py            # Abstract Syntax Tree (AST) evaluator for math strings
-│   │   ├── matrix_ops.py        # NumPy integration for heavy linear algebra
-│   │   └── transforms.py        # Dedicated solvers for Fourier, Laplace, and Z-transforms
+│   ├── MathWorks_Simulink/ (Dynamic_System) # Dynamic Systems, Control Systems & Block Diagram Engine
+│   │   ├── base.py                     # Base Block class, port descriptors, continuous & discrete state vectors
+│   │   ├── continuous.py               # Integrator, Derivative, State-Space, Transfer Function, Zero-Pole, Delay, PID 2DOF
+│   │   ├── discrete.py                 # Unit Delay, Discrete Filter, FIR/IIR, Discrete Integrator, Tapped Delay
+│   │   ├── discontinuities.py          # Saturation, Rate Limiter, Dead Zone, Backlash, Relay, Coulomb Friction, PWM
+│   │   ├── math_ops.py                 # Gain, Sum, Product, Divide, Dot Product, Trig, Complex, Polynomial, MinMax
+│   │   ├── matrix_ops.py               # Matrix Math, Diagonals, Transpose, Inverse, Cross Product, Subsystems
+│   │   ├── logic_bit.py                # Bitwise Logic, Relational, Bit Set/Clear, Bit-Int conversions, Edge Detectors
+│   │   ├── lookup_tables.py            # 1D, 2D, n-D, Dynamic, Prelookup, Interpolation, Sine Table
+│   │   ├── sources.py                  # Step, Ramp, Sine, Chirp, Clock, Pulse, White Noise, Random, Signal Builder
+│   │   ├── sinks.py                    # Scope, Display, Terminator, ToWorkspace, ToFile, StopSimulation
+│   │   ├── routing.py                  # Mux, Demux, Bus Selector, Manual Switch, Goto/From, Data Store Memory
+│   │   ├── signal_attributes.py        # IC, DataTypeConversion, Probes, Width, RateTransition, UnitConversion
+│   │   ├── model_verification.py       # Check Static/Dynamic Range & Gap, Assertions, Gradient & Resolution checks
+│   │   ├── dashboard.py                # Sliders, Knobs, Rotary/Toggle Switches, Push Buttons, Gauges, Lamps
+│   │   ├── messages_events.py          # Queues, Send, Receive, Message Merge, Hit Scheduler, Sequence Viewer
+│   │   ├── ode_solver.py               # Numerical Integrators (RK4, Euler, Heun, Adaptive Dormand-Prince ODE45)
+│   │   ├── scheduler.py                # Directed Acyclic Graph (DAG) topological sorter & multi-rate scheduler
+│   │   ├── catalog.py                  # 17 classified block libraries with 100+ industrial control system blocks
+│   │   └── diagnostics.py              # Model Advisor diagnostics (algebraic loops, dangling ports, sample rates)
 │   │
-│   ├── dynamic_systems/         # (Simulink-like)
-|   |   Engines/Dynamic_System/
-|   ├── base.py                   # Base Block class, state vectors, derivative & discrete interfaces
-|   ├── continuous.py             # Integrators, State-Space, Descriptor SS, TF, Zero-Pole, Delays, PID 2DOF
-|   ├──discrete.py               # Unit Delay, FIR/IIR Filters, Direct Form II, Discrete Integrators, Tapped Delays
-|   ├── discontinuities.py        # Saturation, Rate Limiter, Dead Zone, Backlash, Relay, Coulomb Friction, PWM
-|   ├── logic_bit.py              # Logic ops, Relational, Bit Set/Clear, Bit-Int conversions, Edge detectors
-|   ├── math_ops.py               # Gain, Sum, Product, Divide, Dot, Rounding, Trig, Complex, Polynomial, MinMax
-|   ├── matrix_ops.py             # Matrix math, Diagonals, Transpose, Hermitian, Cross Product, Subsystems
-|   ├── lookup_tables.py          # 1D, 2D, n-D, Dynamic, Prelookup, Interpolation, Sine table
-|   ├── sources.py                # Step, Ramp, Sine, Chirp, Clocks, Pulse, Noise, Random, Counters, Workspace
-|   ├── sinks.py                  # Scope, Display, Terminator, ToWorkspace, ToFile, StopSimulation
-|   ├── routing.py                # Mux, Demux, Buses, Switches, Goto, From, Data Stores, Variants
-|   ├── signal_attributes.py      # IC, DataTypeConversion, Probes, Width, RateTransition, UnitConversion
-|   ├── model_verification.py     # Assertions, Static/Dynamic Range & Gap checkers, Gradient & Resolution checks
-|   ├── strings.py                # String Constant, Compare, Concat, Find, Count, Length, Substring, Conversions
-|   ├── user_functions.py         # Fcn (math expressions), MATLAB/Python function callables, S-Functions, C Callers
-|   ├── ports_subsystems.py       # Inport, Outport, Enabled/Triggered Subsystems, Iterators, If/Switch-Case
-|   ├── dashboard.py              # Sliders, Knobs, Rotary/Toggle Switches, Push Buttons, Gauges, Lamps
-|   ├── messages_events.py        # Queues, Send, Receive, Message Merge, Hit Scheduler, Sequence Viewer
-|   ├── model_utilities.py        # DocBlock, ModelInfo, Linearization snapshot utilities
-|   ├── blocks.py                 # Master re-export aggregator
-|   └── __init__.py               # Dynamic System Engine package entrypoint
-|   |
-│   │   ├── blocks.py            # Definitions for integrators, scopes, and PID controllers
-│   │   ├── scheduler.py         # Directed Acyclic Graph (DAG) for execution order
-│   │   └── ode_solver.py        # Runge-Kutta (RK4) engine for stepping through time
+│   ├── MathWorks_MATLAB/ (Numerical)   # Numerical Math, DSP & Matrix Workbench Engine
+│   │   ├── parser.py                   # Vectorized Abstract Syntax Tree (AST) evaluator for MATLAB matrix math
+│   │   ├── matrix_ops.py               # NumPy linear algebra, eigenvalues, SVD, determinant, matrix rank
+│   │   ├── dsp_engine.py               # Digital Signal Processing, Butterworth/Chebyshev/FIR filters, FFT, PSD, Spectrogram
+│   │   ├── transforms.py               # Continuous & Discrete Transfer Functions, Laplace, Fourier, Z-plane, Bode plots
+│   │   └── matlab_manager.py           # MATLAB script manager (.tmat/.m) with external editor launching & execution
 │   │
-│   ├── digital_logic/           # (Xilinx-like)
-│   │   ├── gates.py             # Combinational and sequential logic definitions
-│   │   ├── hdl_parser.py        # Translating standard logic syntax into graph nodes
-│   │   └── event_sim.py         # Managing clock edges and signal propagation delays
+│   ├── AMD_Xilinx/ (Digital_Logic)     # Digital Logic Design & Hardware Description Engine
+│   │   ├── gates.py                    # Combinational logic gates (AND, OR, NOT, XOR, NAND, NOR) & Flip-Flops (DFF, JK)
+│   │   ├── hdl_parser.py               # Logic circuit graph translator, boolean equations & truth table generator
+│   │   └── event_sim.py                # Discrete-event simulation, gate delays, clock edges, and ASCII timing diagrams
 │   │
-│   └── embedded/                # (Embedded IDE/Emulator)
-│       ├── toolchain.py         # Interfaces with local Embedded C compilers
-│       ├── mcu_core.py          # Register and memory mapping (e.g., TI C2000 architecture)
-│       └── peripherals.py       # Simulating PWM, timers, and motor control outputs
+│   ├── KiCad/                          # KiCad EDA Schematic, PCB Layout & Manufacturing Engine
+│   │   ├── schematic.py                # Schematic sheets, pin nets, paper-style ASCII schematics, and ERC rules checker
+│   │   ├── footprints.py               # 500+ standard SMD (0201-2512) and THT footprints, pad geometries & dimensions
+│   │   ├── pcb_engine.py               # 2-layer PCB layout, component placement, A* trace routing, vias, and DRC checker
+│   │   ├── calculator.py               # Engineering calculators (IPC-2152 track width, via parasitics, microstrip, 555, op-amp, filters)
+│   │   ├── gerber_exporter.py          # Complete RS-274X Gerber layer suite (F.Cu, B.Cu, SilkS, Mask, Paste, Edge) & Excellon drill files
+│   │   └── project_manager.py          # Single-folder project manager (.tkcad, .tsch, .tpcb, .tbom, gerbers)
+│   │
+│   └── Embedded_IDE/ (Embedded)        # Real-Hardware Embedded IDE & Microcontroller Firmware Workbench
+│       ├── boards.py                   # 30+ physical board specs (Arduino, ESP32, STM32, Raspberry Pi Pico, TI C2000, RISC-V)
+│       ├── usb_manager.py              # Hardware USB VID/PID scanner, COM port autodetection, and DTR/RTS reset pulsing
+│       ├── sketch_manager.py           # Embedded C/C++ project manager (.tembed/.ino) with templates & external editor sync
+│       ├── real_flasher.py             # Host toolchain compiler (avr-gcc/arduino-cli) and binary hardware uploader
+│       ├── real_serial_monitor.py      # Multi-threaded USB serial terminal, bidirectional I/O, and real-time ASCII telemetry plotter
+│       ├── mcu_core.py                 # Instruction set emulator and register/memory map (TI C2000 F28069 architecture)
+│       ├── peripherals.py              # Virtual PWM, Timers, ePWM, and ADC peripheral simulation
+│       └── virtual_devices.py          # Virtual hardware breadboard (LEDs, RGB, Buttons, Pots, DHT22, Ultrasonic, Servo, LCD, OLED)
 │
-├── ui/                          
-│   ├── app.py                   # Main Textual App (what we just built)
-│   ├── screens.py               # Different UI layouts for different modes
-│   └── widgets.py               # Custom terminal plots and ASCII block viewers
+├── UI/                                 # User Interface & Frontend Terminal Engine
+│   ├── app.py                          # Unified TerminusApp (Textual TUI) & decoupled TerminusEngineBridge CLI
+│   ├── screens.py                      # Multi-panel layouts for Circuit, Dynamic, Numerical, Digital, Embedded, KiCad
+│   └── widgets.py                      # Terminal plots, ASCII scopes, telemetry graphs, and block diagram inspectors
 │
-└── terminus.py                  # The main entry point
+├── Terminus.py                         # Master CLI REPL shell, script executor, and networking launcher
+└── tests/                              # Comprehensive unit & integration test suite (140+ automated tests)

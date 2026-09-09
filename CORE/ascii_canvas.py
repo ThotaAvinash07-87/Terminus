@@ -81,6 +81,27 @@ class AsciiCanvas:
             if 0 <= px < self.width:
                 self.grid[y][px] = ch
 
+    def draw_line(self, x1: int, y1: int, x2: int, y2: int, char: str = "─") -> None:
+        """Draws a line between (x1, y1) and (x2, y2) using Bresenham's line algorithm."""
+        dx = abs(x2 - x1)
+        dy = abs(y2 - y1)
+        sx = 1 if x1 < x2 else -1
+        sy = 1 if y1 < y2 else -1
+        err = dx - dy
+
+        cx, cy = x1, y1
+        while True:
+            self.set_char(cx, cy, char)
+            if cx == x2 and cy == y2:
+                break
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                cx += sx
+            if e2 < dx:
+                err += dx
+                cy += sy
+
     def draw_box(
         self,
         x: int,
@@ -463,22 +484,65 @@ class AsciiBodePlotter:
 
 
 class SchematicVisualizer:
-    """Visualizes circuit netlists and dynamic system block diagrams in structured ASCII topologies."""
+    """Visualizes circuit schematics and PCB layouts with compact paper-style electronic blocks and calculations."""
 
     @classmethod
-    def render_circuit_topology(cls, components: Dict[str, Any], pin_map: Dict[str, List[str]]) -> str:
-        """Draws visual block diagram of connected circuit components."""
+    def get_component_short_block(cls, name: str, comp_type: str, val_str: str, probed_info: Optional[str] = None) -> str:
+        """Generates a compact paper-style notation block e.g. '[ R1 10k ]' or '[ U1 NE555 ]'."""
+        c_clean = comp_type.upper().replace("COMPONENT", "").replace("MODEL", "").strip()
+        
+        # Determine clean single-letter/short prefix
+        if name.startswith(("R", "r")) or c_clean.startswith("R"):
+            prefix = "R"
+        elif name.startswith(("C", "c")) or c_clean.startswith("C"):
+            prefix = "C"
+        elif name.startswith(("L", "l")) or c_clean.startswith("L"):
+            prefix = "L"
+        elif name.startswith(("D", "d")) or c_clean.startswith("D") or "LED" in c_clean:
+            prefix = "D"
+        elif name.startswith(("Q", "q")) or c_clean.startswith("BJT") or "NPN" in c_clean or "PNP" in c_clean:
+            prefix = "Q"
+        elif name.startswith(("M", "m")) or c_clean.startswith("MOS") or "FET" in c_clean:
+            prefix = "M"
+        elif name.startswith(("U", "u")) or "OPAMP" in c_clean or "OP-AMP" in c_clean or "IC" in c_clean:
+            prefix = "U"
+        elif name.startswith(("V", "v")) or c_clean.startswith("VOLT") or c_clean.startswith("V"):
+            prefix = "V"
+        elif name.startswith(("I", "i")) or c_clean.startswith("CURR") or c_clean.startswith("I"):
+            prefix = "I"
+        elif name.startswith(("J", "j")) or c_clean.startswith("CONN") or c_clean.startswith("HEADER"):
+            prefix = "J"
+        else:
+            prefix = name[:2]
+
+        val_display = val_str.replace(" ", "") if val_str else ""
+        label = f"[ {name}:{val_display} ]" if val_display else f"[ {name} ]"
+        if probed_info:
+            label += f" ({probed_info})"
+        return label
+
+    @classmethod
+    def render_circuit_topology(
+        cls,
+        components: Dict[str, Any],
+        pin_map: Dict[str, List[str]],
+        probed_values: Optional[Dict[str, Dict[str, float]]] = None
+    ) -> str:
+        """Renders an ultra-clean, industry-standard paper-style circuit schematic topology with short blocks and calculations."""
         if not components:
             return "[Empty Circuit Netlist]"
 
-        # Group components by connected nets
         lines: List[str] = [
             "[bold cyan]┌────────────────────────────────────────────────────────┐[/bold cyan]",
-            "[bold cyan]│            CIRCUIT SCHEMATIC TOPOLOGY BLOCK            │[/bold cyan]",
+            "[bold cyan]│ CIRCUIT SCHEMATIC TOPOLOGY BLOCK - PAPER STANDARD ART  │[/bold cyan]",
             "[bold cyan]└────────────────────────────────────────────────────────┘[/bold cyan]"
         ]
 
         net_connections: Dict[str, List[str]] = {}
+        sources: List[Tuple[str, Any]] = []
+        passives_and_ics: List[Tuple[str, Any]] = []
+        grounded_comps: List[Tuple[str, Any]] = []
+
         for cname, comp in components.items():
             pins = pin_map.get(cname, getattr(comp, "nodes", []))
             for i, p in enumerate(pins):
@@ -487,23 +551,115 @@ class SchematicVisualizer:
                     net_connections[net] = []
                 net_connections[net].append(f"{cname}.p{i+1}")
 
-        # Render component blocks
-        for cname, comp in components.items():
+            c_upper = cname.upper()
+            if c_upper.startswith("V") or c_upper.startswith("I") or type(comp).__name__.startswith("Voltage") or type(comp).__name__.startswith("Current"):
+                sources.append((cname, comp))
+            elif "0" in pins or "GND" in [str(p).upper() for p in pins]:
+                grounded_comps.append((cname, comp))
+            else:
+                passives_and_ics.append((cname, comp))
+
+        # 1. Paper-Style Schematic ASCII Circuit Art
+        lines.append("  [bold yellow]Standard Circuit Schematic (Left: In/Src ─► Middle: Core ─► Right: Out | Bottom: GND ⏚)[/bold yellow]")
+        lines.append("  ─────────────────────────────────────────────────────────────────────────────────────────")
+
+        all_ordered = sources + passives_and_ics + [gc for gc in grounded_comps if gc not in sources and gc not in passives_and_ics]
+        if not all_ordered:
+            all_ordered = list(components.items())
+
+        for cname, comp in all_ordered:
             val = getattr(comp, "value", getattr(comp, "dc", ""))
             val_str = format_eng_unit(val) if isinstance(val, (int, float)) and val != 0 else str(val)
             pins = pin_map.get(cname, getattr(comp, "nodes", []))
             pins_clean = [p if p != "0" else "GND" for p in pins]
 
             comp_type = type(comp).__name__
-            line = f"  ┌──────────────┐\n  │ {cname:<4} ({comp_type[:6]}) │ ── Net [{pins_clean[0]}] ──► [{val_str}] ──► Net [{pins_clean[1] if len(pins_clean) > 1 else 'GND'}]\n  └──────────────┘"
+            probe_str = None
+            if probed_values and cname in probed_values:
+                pv = probed_values[cname]
+                p_parts = []
+                if "v" in pv:
+                    p_parts.append(f"V={pv['v']:.2f}V")
+                if "i" in pv:
+                    p_parts.append(f"I={format_eng_unit(pv['i'], 'A')}")
+                if "p" in pv:
+                    p_parts.append(f"P={format_eng_unit(pv['p'], 'W')}")
+                probe_str = " | ".join(p_parts)
+
+            block_str = cls.get_component_short_block(cname, comp_type, val_str, probe_str)
+            p1_str = f"Net [{pins_clean[0]}]" if len(pins_clean) > 0 else "Net [?]"
+            
+            if len(pins_clean) > 1:
+                p2_name = pins_clean[1]
+                if p2_name == "GND":
+                    p2_str = "⏚ GND"
+                elif p2_name in ("VCC", "VDD", "+5V", "+3V3", "+12V"):
+                    p2_str = f"⏉ {p2_name}"
+                else:
+                    p2_str = f"Net [{p2_name}]"
+            else:
+                p2_str = "⏚ GND" if len(pins_clean) == 1 and pins_clean[0] != "GND" else ""
+
+            line = f"  {p1_str:<14} ───► {block_str} ───► {p2_str}"
             lines.append(line)
 
-        # Net junction list
-        lines.append("\n  [bold green]Node Connections (Nets):[/bold green]")
+        # 2. Net junction list (Wires & Interconnects)
+        lines.append("\n  [bold green]Circuit Net Connectivity (Wires & Junctions):[/bold green]")
         for net, endpoints in net_connections.items():
             end_str = " ──┼── ".join(endpoints)
-            lines.append(f"    • Net [{net:<8}]:  {end_str}")
+            net_icon = "⏚" if net == "GND" else ("⏉" if net in ("VCC", "VDD", "+5V", "+3V3") else "•")
+            lines.append(f"    {net_icon} Net [{net:<8}]:  {end_str}")
 
+        return "\n".join(lines)
+
+    @classmethod
+    def render_pcb_board(
+        cls,
+        width_mm: float,
+        height_mm: float,
+        components: Dict[str, Any],
+        tracks: List[Any],
+        vias: List[Any],
+        grid_cols: int = 50,
+        grid_rows: int = 16
+    ) -> str:
+        """Renders high-clarity 2D terminal PCB layout canvas with board outline, components, traces, and vias."""
+        canvas = AsciiCanvas(width=grid_cols, height=grid_rows)
+        canvas.draw_box(0, 0, grid_cols, grid_rows, title=f"PCB: {width_mm:.0f}x{height_mm:.0f}mm", as_obstacle=False)
+
+        def to_grid(x_mm: float, y_mm: float) -> Tuple[int, int]:
+            gx = int(1 + (x_mm / max(1.0, width_mm)) * (grid_cols - 3))
+            gy = int(1 + (y_mm / max(1.0, height_mm)) * (grid_rows - 3))
+            return max(1, min(grid_cols - 2, gx)), max(1, min(grid_rows - 2, gy))
+
+        # 1. Draw routed copper tracks
+        for t in tracks:
+            sx, sy = getattr(t, "start_x_mm", 0), getattr(t, "start_y_mm", 0)
+            ex, ey = getattr(t, "end_x_mm", 0), getattr(t, "end_y_mm", 0)
+            p1 = to_grid(sx, sy)
+            p2 = to_grid(ex, ey)
+            canvas.draw_line(p1[0], p1[1], p2[0], p2[1], char="─" if p1[1] == p2[1] else "│" if p1[0] == p2[0] else "╱")
+
+        # 2. Draw vias
+        for v in vias:
+            vx, vy = getattr(v, "x_mm", 0), getattr(v, "y_mm", 0)
+            gx, gy = to_grid(vx, vy)
+            canvas.set_char(gx, gy, "◎")
+
+        # 3. Draw component footprints and short labels
+        for ref, comp in components.items():
+            cx = getattr(comp, "x_mm", 0)
+            cy = getattr(comp, "y_mm", 0)
+            gx, gy = to_grid(cx, cy)
+            tag = ref[:4]
+            canvas.draw_text(max(1, gx - 1), gy, f"[{tag}]")
+
+        board_art = canvas.render()
+        lines = [
+            board_art,
+            f"[dim]  * Placed Components: {len(components)} | Routed Tracks: {len(tracks)} | Vias: {len(vias)}[/dim]",
+            f"[dim]  * Layers: F.Cu (Top Red), B.Cu (Bottom Blue), Edge.Cuts (Outline), SilkS (Labels)[/dim]"
+        ]
         return "\n".join(lines)
 
     @classmethod

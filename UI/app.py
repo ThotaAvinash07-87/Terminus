@@ -73,6 +73,13 @@ from Engines.Embedded import (
 from Engines.Embedded.mcu_core import MCUCore
 from Engines.Embedded.toolchain import Assembler, Disassembler
 
+from Engines.KiCad import (
+    FootprintCatalog, FootprintSpec, PadSpec,
+    KiCadSchematic, SchematicComponent, SchematicPin,
+    KiCadPCB, PlacedComponent, CopperTrack, PCBVia, PCBPadLocation,
+    GerberExporter, KiCadCalculator, KiCadProject
+)
+
 
 
 def split_smart_args(text: str) -> List[str]:
@@ -147,6 +154,9 @@ class TerminusEngineBridge:
         # Structured Project Storage (User's Documents/Terminus Files)
         self.storage = StorageManager.get_instance()
 
+        # KiCad Schematics & PCB Design Engine
+        self.kicad_proj = KiCadProject("MyPCBProject", storage=self.storage)
+
         # IPC
         self.ipc_client = IPCClient()
         self.ipc_router: Optional[IPCRouter] = None
@@ -164,12 +174,14 @@ class TerminusEngineBridge:
             self.mode = "DYNAMIC"
         elif m in ("digital", "xilinx", "logic", "verilog", "hdl"):
             self.mode = "DIGITAL"
-        elif m in ("embedded", "mcu", "c2000", "dsp"):
+        elif m in ("embedded", "mcu", "c2000", "dsp", "arduino", "arduino_ide"):
             self.mode = "EMBEDDED"
+        elif m in ("kicad", "pcb", "board", "eda", "schematic"):
+            self.mode = "KICAD"
         elif m in ("unified", "workbench", "all"):
             self.mode = "UNIFIED"
         else:
-            raise ValueError(f"Unknown mode '{mode_str}'. Valid modes: circuit, numerical, dynamic, digital, embedded, unified")
+            raise ValueError(f"Unknown mode '{mode_str}'. Valid modes: circuit, numerical, dynamic, digital, embedded, kicad, unified")
         return self.mode
 
     def execute_command(self, raw_command: str) -> str:
@@ -241,6 +253,8 @@ class TerminusEngineBridge:
             return self._handle_digital(line, tokens)
         elif self.mode == "EMBEDDED":
             return self._handle_embedded(line, tokens)
+        elif self.mode == "KICAD":
+            return self._handle_kicad(line, tokens)
         else:
             return self._handle_unified(line, tokens)
 
@@ -364,6 +378,37 @@ class TerminusEngineBridge:
                 "  file save [name]             - Save project to Documents/Terminus Files/Embedded/<ProjectName>/",
                 "  file open <name>             - Open project from storage",
             ])
+        elif self.mode == "KICAD":
+            help_texts.extend([
+                f"\nKiCad EDA Schematic & PCB Layout Commands (Project: {self.kicad_proj.name}):",
+                "  library [category]           - Browse KiCad symbol & footprint catalog (Passives, Diodes, Transistors, ICs...)",
+                "  library search <query>       - Search symbols and footprints by keyword or model name",
+                "  inspect <Ref|Footprint>      - Inspect component pins, footprint pads, and physical dimensions",
+                "  add <Ref> <Value> [Footprint]- Add component (e.g. add R1 10k 0805, add C1 100nF 0603, add U1 NE555 SOIC-8)",
+                "  connect <p1> | <p2> | <Net>  - Connect pins/nets (e.g. connect V1.1 | R1.1 | VCC, connect R1.2 | C1.1 | Net_Out)",
+                "  net <NetName> <p1> <p2> ...  - Create named net interconnect",
+                "  remove <Ref>                 - Remove component from schematic and PCB",
+                "  schematic / show             - Render paper-style ASCII circuit schematic with short symbol blocks",
+                "  place <Ref> <x_mm> <y_mm>    - Place component on PCB board canvas",
+                "  route <NetName> / autoroute  - Route copper tracks between component pads on PCB",
+                "  pcb / board / layout         - Render 2D terminal PCB layout canvas with traces, vias, and silkscreen",
+                "  erc                          - Run Electrical Rules Check (checks floating pins, missing ground, power rails)",
+                "  drc                          - Run Design Rules Check (checks clearance, min track width, via sizes)",
+                "  probe <Ref>                  - Probe and calculate node voltage, branch current, and power dissipation",
+                "  calc track <I_amp> [dT] [oz] - Calculate IPC-2152/2221 PCB track width, resistance, and voltage drop",
+                "  calc via <drill_mm> [pad_mm] - Calculate via DC resistance, inductance, capacitance, and ampacity",
+                "  calc microstrip <W> <H> [Er] - Calculate RF microstrip transmission line impedance Z0 and delay",
+                "  calc 555 <R1> <R2> <C>       - Calculate astable 555 timer frequency, period, and duty cycle",
+                "  calc opamp <inv|noninv> <R1> <Rf> - Calculate op-amp closed loop gain (V/V and dB)",
+                "  calc divider <Vin> <R1> <R2> - Calculate voltage divider output voltage, ratio, and dissipation",
+                "  calc filter <rc|rl|lc> <R> <C> - Calculate filter cutoff frequency (-3dB fc) and bandwidth",
+                "  calc reactance <freq> <C/L>  - Calculate capacitive (Xc) or inductive (Xl) reactance",
+                "  calc power <V> <I|R>         - Calculate Ohm's law and power dissipation",
+                "  gerber / gerbers             - Export complete industry-standard RS-274X Gerber suite & drill files",
+                "  bom                          - Export Bill of Materials CSV (.tbom)",
+                "  file save [name]             - Save project files (.tkcad, .tsch, .tpcb, .tbom, gerbers) in project folder",
+                "  file open <name>             - Open project from storage",
+            ])
         return "\n".join(help_texts)
 
     def _handle_file_command(self, line: str, tokens: List[str]) -> str:
@@ -388,6 +433,8 @@ class TerminusEngineBridge:
                 self.last_logic_traces = None
             elif self.mode == "EMBEDDED":
                 self.mcu.reset()
+            elif self.mode == "KICAD":
+                self.kicad_proj = KiCadProject(name=name, storage=self.storage)
             return f"[green]Created new {self.mode} model/workspace:[/green] [bold]{name}[/bold]"
 
         elif sub == "save":
@@ -474,6 +521,11 @@ class TerminusEngineBridge:
             ok, msg = self.sketch_proj.save_project(proj_name)
             return f"[green]{msg}[/green]"
 
+        elif self.mode == "KICAD":
+            proj_name = name or self.kicad_proj.name or "MyPCBProject"
+            ok, msg = self.kicad_proj.save_project(proj_name)
+            return f"[green]{msg}[/green]"
+
         return "Workspace saved."
 
     def _load_into_workspace(self, name: str) -> str:
@@ -511,6 +563,12 @@ class TerminusEngineBridge:
                 self.arduino.load_sketch(self.sketch_proj.source_code)
                 return f"[green]{msg}[/green]"
             raise FileNotFoundError(f"Project '{name}' not found in {self.storage.get_mode_dir('EMBEDDED')}")
+
+        elif self.mode == "KICAD":
+            ok, msg = self.kicad_proj.load_project(name)
+            if ok:
+                return f"[green]{msg}[/green]"
+            raise FileNotFoundError(msg)
 
         return "File loaded."
 
@@ -939,7 +997,15 @@ class TerminusEngineBridge:
                 raise ValueError("Usage: probe <node_or_trace> (e.g. probe out, probe V(out))")
             return self._cmd_circuit_probe(tokens[1])
 
-        # 5. Export SPICE
+        # 5. Paper-Style Schematic Visualization
+        if first in ("schematic", "paper", "topology"):
+            return SchematicVisualizer.render_circuit_topology(self.circuit_netlist.components, self.circuit_netlist.pin_map)
+
+        # 6. Engineering Calculator in Circuit mode
+        if first in ("calc", "calculate"):
+            return self._cmd_kicad_calc(tokens[1:])
+
+        # 7. Export SPICE
         if first == "export" and len(tokens) >= 2 and tokens[1].lower() == "spice":
             name = tokens[2] if len(tokens) > 2 else self.circuit_netlist.name
             spice_code = self.circuit_netlist.export_spice()
@@ -948,6 +1014,8 @@ class TerminusEngineBridge:
 
         # Standard Netlist operations
         if first in ("add", "connect", "remove", "delete", "set", "list", "show", "clear"):
+            if first in ("show", "list") and len(tokens) == 1:
+                return SchematicVisualizer.render_circuit_topology(self.circuit_netlist.components, self.circuit_netlist.pin_map)
             res = CircuitParser.parse_command(self.circuit_netlist, line)
             self.circuit_solver = MNASolver(self.circuit_netlist)
             t = res.get("type")
@@ -2374,6 +2442,469 @@ class TerminusEngineBridge:
         self.sketch_proj.set_content(examples[ex_name])
         self.arduino.load_sketch(self.sketch_proj.source_code)
         return f"[green]Loaded hardware template '{ex_name}' into project.[/green]\nType 'compile' then 'upload' to dump onto real board."
+
+    # --- KiCad EDA & PCB Design Handlers ---
+    def _handle_kicad(self, line: str, tokens: List[str]) -> str:
+        first = tokens[0].lower()
+
+        # 1. KiCad Library & Footprint Browser
+        if first == "library":
+            return self._cmd_kicad_library(tokens[1:])
+
+        # 2. Inspect component, footprint, or model
+        if first in ("inspect", "details", "info"):
+            if len(tokens) < 2:
+                raise ValueError("Usage: inspect <component_ref_or_footprint> (e.g. inspect R1, inspect 0805, inspect SOIC-8)")
+            return self._cmd_kicad_inspect(tokens[1])
+
+        # 3. Add Component (e.g. add R1 10k 0805, add U1 NE555 SOIC-8)
+        if first == "add":
+            if len(tokens) < 3:
+                raise ValueError("Usage: add <Ref> <Value> [Footprint] (e.g. add R1 10k 0805, add C1 100nF 0603, add U1 NE555 SOIC-8)")
+            ref = tokens[1].upper()
+            val = tokens[2]
+            fp = tokens[3] if len(tokens) > 3 else None
+            comp = self.kicad_proj.schematic.add_component(ref, val, footprint=fp)
+            # Sync to PCB
+            self.kicad_proj.pcb.add_component(ref, comp.footprint_name, value=val, comp_type=comp.comp_type)
+            return f"[green]Added KiCad Component:[/green] [bold]{ref}[/bold] ({comp.value}) [dim]Footprint: {comp.footprint_name} | Pins: {len(comp.pins)}[/dim]"
+
+        # 4. Connect Pins / Nets (e.g. connect V1.1 | R1.1 | VCC)
+        if first in ("connect", "wire"):
+            args = line[len(tokens[0]):].strip()
+            endpoints = [p.strip() for p in args.split("|") if p.strip()]
+            if not endpoints:
+                endpoints = tokens[1:]
+            if len(endpoints) < 2:
+                raise ValueError("Usage: connect <pin1> | <pin2> | [NetName] (e.g. connect V1.1 | R1.1 | VCC)")
+            net_name = None
+            if len(endpoints) >= 3 and not ("." in endpoints[-1]):
+                net_name = endpoints.pop()
+            for i in range(len(endpoints) - 1):
+                self.kicad_proj.schematic.connect(endpoints[i], endpoints[i+1], net_name=net_name)
+            # Sync nets to PCB
+            for net_name, pins in self.kicad_proj.schematic.nets.items():
+                for ref, pnum in pins:
+                    self.kicad_proj.pcb.set_pad_net(ref, pnum, net_name)
+            return f"[green]Connected:[/green] {' ─── '.join(endpoints)} [dim](Net: {net_name or 'Auto'})[/dim]"
+
+        # 5. Named Net interconnect (e.g. net VCC V1.1 R1.1 U1.8)
+        if first == "net":
+            if len(tokens) < 3:
+                raise ValueError("Usage: net <NetName> <pin1> <pin2> ... (e.g. net VCC V1.1 R1.1)")
+            net_name = tokens[1]
+            pins = tokens[2:]
+            for i in range(len(pins) - 1):
+                self.kicad_proj.schematic.connect(pins[i], pins[i+1], net_name=net_name)
+            for ref, pnum in self.kicad_proj.schematic.nets.get(net_name, set()):
+                self.kicad_proj.pcb.set_pad_net(ref, pnum, net_name)
+            return f"[green]Created Net [{net_name}]:[/green] {', '.join(pins)}"
+
+        # 6. Remove Component
+        if first in ("remove", "delete", "rm"):
+            if len(tokens) < 2:
+                raise ValueError("Usage: remove <Ref>")
+            ref = tokens[1].upper()
+            if ref in self.kicad_proj.schematic.components:
+                del self.kicad_proj.schematic.components[ref]
+            if ref in self.kicad_proj.pcb.placed_components:
+                del self.kicad_proj.pcb.placed_components[ref]
+            return f"[green]Removed component:[/green] [bold]{ref}[/bold]"
+
+        # 7. Paper-Style Schematic View
+        if first in ("schematic", "sch", "show", "circuit"):
+            return self.kicad_proj.schematic.render_schematic_ascii()
+
+        # 8. PCB Placement (e.g. place R1 10 20 90)
+        if first == "place":
+            if len(tokens) < 4:
+                raise ValueError("Usage: place <Ref> <x_mm> <y_mm> [rotation_deg] (e.g. place R1 10 15 0)")
+            ref = tokens[1].upper()
+            x = float(tokens[2])
+            y = float(tokens[3])
+            rot = float(tokens[4]) if len(tokens) > 4 else 0.0
+            comp = self.kicad_proj.schematic.components.get(ref)
+            fp_name = comp.footprint_name if comp else "0805"
+            self.kicad_proj.pcb.place_component(ref, x, y, rotation_deg=rot, footprint=fp_name)
+            return f"[green]Placed on PCB:[/green] [bold]{ref}[/bold] at ({x:.1f}, {y:.1f}) mm, rot={rot:.0f}°"
+
+        # 9. PCB Routing (e.g. route VCC, autoroute)
+        if first in ("route", "autoroute"):
+            if first == "autoroute" or (len(tokens) > 1 and tokens[1].lower() == "all"):
+                ok, cnt = self.kicad_proj.pcb.autoroute_all_nets()
+                return f"[green]Auto-routed {cnt} copper tracks across all nets.[/green]"
+            elif len(tokens) >= 2:
+                net_name = tokens[1]
+                ok, msg = self.kicad_proj.pcb.route_net(net_name)
+                return f"[green]{msg}[/green]"
+            else:
+                ok, cnt = self.kicad_proj.pcb.autoroute_all_nets()
+                return f"[green]Auto-routed {cnt} copper tracks.[/green]"
+
+        # 10. PCB 2D Board Canvas View
+        if first in ("pcb", "board", "layout"):
+            return self.kicad_proj.pcb.render_board_ascii()
+
+        # 11. Electrical Rules Check (ERC)
+        if first in ("erc", "rules", "check_erc"):
+            return self._cmd_kicad_erc()
+
+        # 12. Design Rules Check (DRC)
+        if first in ("drc", "check_drc", "check"):
+            return self._cmd_kicad_drc()
+
+        # 13. Probe Component / Value calculation
+        if first in ("probe", "calc_comp", "measure"):
+            if len(tokens) < 2:
+                raise ValueError("Usage: probe <Ref> (e.g. probe R1, probe C1, probe U1)")
+            return self._cmd_kicad_probe(tokens[1])
+
+        # 14. Engineering Calculators
+        if first in ("calc", "calculate"):
+            return self._cmd_kicad_calc(tokens[1:])
+
+        # 15. Export Gerbers
+        if first in ("gerber", "gerbers"):
+            res = self.kicad_proj.export_gerbers()
+            lines = [f"[bold green]Generated Complete RS-274X Gerber & Drill Suite ({len(res)} files):[/bold green]"]
+            for layer_name, p in res.items():
+                lines.append(f"  * [cyan]{layer_name:<16}[/cyan] -> {p.name}")
+            return "\n".join(lines)
+
+        # 16. Bill of Materials (BOM)
+        if first == "bom":
+            pdir = self.kicad_proj.get_project_dir()
+            tbom_path = pdir / f"{self.kicad_proj.name}.tbom"
+            self.kicad_proj.save_project()
+            with open(tbom_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            return f"[bold cyan]=== Bill of Materials ({self.kicad_proj.name}) ===[/bold cyan]\n{content}"
+
+        # 17. Clear / Reset
+        if first == "clear":
+            self.kicad_proj.schematic.clear()
+            self.kicad_proj.pcb.clear()
+            return "[yellow]Cleared active KiCad schematic and PCB layout.[/yellow]"
+
+        raise ValueError(f"Unknown KiCad command '{line}'. Type 'help' for available commands.")
+
+    def _cmd_kicad_library(self, args: List[str]) -> str:
+        """Browse KiCad standard symbol & footprint libraries."""
+        FootprintCatalog.initialize()
+        fps = FootprintCatalog.list_footprints()
+        if not args:
+            categories: Dict[str, List[FootprintSpec]] = {}
+            for fp in fps:
+                categories.setdefault(fp.category, []).append(fp)
+            lines = [
+                "[bold cyan]=== KiCad EDA Classified Component & Footprint Library ===[/bold cyan]",
+                "Standard Categories & Footprints:"
+            ]
+            for cat, specs in categories.items():
+                examples = ", ".join(s.name for s in specs[:4])
+                lines.append(f"  * [bold yellow]{cat:<18}[/bold yellow] ({len(specs)} footprints) - e.g. {examples}")
+            lines.append("\nCommands:")
+            lines.append("  library <category>           - List all footprints in a category (Passive, Semiconductor, IC, Connector...)")
+            lines.append("  library search <query>       - Search footprints by name/dimensions")
+            lines.append("  inspect <FootprintName>      - View physical pad dimensions, pitch, and drill specs")
+            return "\n".join(lines)
+
+        sub = args[0].lower()
+        if sub in ("search", "find"):
+            if len(args) < 2:
+                raise ValueError("Usage: library search <query>")
+            q = args[1].lower()
+            matches = [fp for fp in fps if q in fp.name.lower() or q in fp.category.lower() or q in fp.description.lower()]
+            if not matches:
+                return f"[yellow]No footprints found matching '{q}'.[/yellow]"
+            lines = [f"[bold cyan]Search Results for '{q}' ({len(matches)} found):[/bold cyan]"]
+            for m in matches:
+                tht_smd = "SMD" if m.is_smd else "THT"
+                lines.append(f"  * [bold green]{m.name:<25}[/bold green] [[dim]{m.category} | {tht_smd} | {m.pad_count} pads[/dim]] - {m.description}")
+            return "\n".join(lines)
+
+        category = args[0]
+        matches = [fp for fp in fps if fp.category.lower() == category.lower()]
+        if not matches:
+            # Try as footprint name
+            fp_spec = FootprintCatalog.get_footprint(category)
+            if fp_spec:
+                return self._cmd_kicad_inspect(fp_spec.name)
+            return f"[yellow]Category '{category}' not found. Run 'library' to list all categories.[/yellow]"
+
+        lines = [f"[bold cyan]=== KiCad Library: {category} ({len(matches)} items) ===[/bold cyan]"]
+        for m in matches:
+            tht_smd = "SMD" if m.is_smd else "THT"
+            lines.append(f"  * [bold green]{m.name:<25}[/bold green] ({tht_smd}, {m.width_mm:.1f}x{m.height_mm:.1f}mm, {m.pad_count} pads) - [dim]{m.description}[/dim]")
+        return "\n".join(lines)
+
+    def _cmd_kicad_inspect(self, target: str) -> str:
+        """Inspects component instance or footprint specification."""
+        utarget = target.strip().upper()
+        # Check active schematic components
+        if utarget in self.kicad_proj.schematic.components:
+            c = self.kicad_proj.schematic.components[utarget]
+            fp_spec = FootprintCatalog.get_footprint(c.footprint_name)
+            lines = [
+                f"[bold cyan]=== Schematic Component: {c.ref} ===[/bold cyan]",
+                f"Type       : {c.comp_type}",
+                f"Value      : {c.value}",
+                f"Footprint  : {c.footprint_name}",
+                f"Pins ({len(c.pins)}):"
+            ]
+            for pnum, pin in c.pins.items():
+                net_str = f"[bold green]{pin.net}[/bold green]" if pin.net else "[dim]Floating[/dim]"
+                lines.append(f"  * Pin {pnum} ({pin.name}): Net -> {net_str}")
+            return "\n".join(lines)
+
+        # Check footprint catalog
+        fp_spec = FootprintCatalog.get_footprint(target)
+        if fp_spec:
+            lines = [
+                f"[bold cyan]=== KiCad Footprint Spec: {fp_spec.name} ===[/bold cyan]",
+                f"Category   : {fp_spec.category}",
+                f"Dimensions : {fp_spec.width_mm:.2f} x {fp_spec.height_mm:.2f} mm",
+                f"Mounting   : {'Surface Mount (SMD)' if fp_spec.is_smd else 'Through-Hole (THT)'}",
+                f"Pad Count  : {fp_spec.pad_count}",
+                f"Description: {fp_spec.description}",
+                "Pads Layout:"
+            ]
+            for pad in fp_spec.pads:
+                drill_str = f" | Drill: {pad.drill_mm:.2f}mm" if pad.is_tht else ""
+                lines.append(f"  * Pad {pad.number} ({pad.name}): offset=({pad.x_offset_mm:+.2f}, {pad.y_offset_mm:+.2f})mm, size={pad.width_mm:.2f}x{pad.height_mm:.2f}mm [{pad.shape}{drill_str}]")
+            return "\n".join(lines)
+
+        raise KeyError(f"Neither component '{target}' nor footprint '{target}' was found.")
+
+    def _cmd_kicad_probe(self, ref: str) -> str:
+        """Probes electrical parameters and calculations for a component."""
+        data = self.kicad_proj.schematic.probe_component(ref)
+        lines = [
+            f"[bold cyan]=== Electrical Calculation & Probe: {data.get('ref')} ===[/bold cyan]",
+            f"Component Type : {data.get('type')}",
+            f"Value          : {data.get('value')}",
+        ]
+        if "voltage_drop_v" in data:
+            lines.append(f"Voltage Drop   : [bold green]{data['voltage_drop_v']:.3f} V[/bold green]")
+        if "current_ma" in data:
+            lines.append(f"Branch Current : [bold green]{data['current_ma']:.3f} mA[/bold green] ({data['current_a']:.6g} A)")
+        if "power_mw" in data:
+            lines.append(f"Power Dissipated: [bold yellow]{data['power_mw']:.3f} mW[/bold yellow]")
+        if "reactance_1khz_ohms" in data:
+            lines.append(f"Reactance @1kHz: [bold cyan]{data['reactance_1khz_ohms']:.2f} Ω[/bold cyan]")
+        if "pins" in data:
+            lines.append("Pin Connections:")
+            for p, net in data["pins"].items():
+                net_str = net if net else "Floating"
+                lines.append(f"  * Pin {p} -> Net [{net_str}]")
+        return "\n".join(lines)
+
+    def _cmd_kicad_erc(self) -> str:
+        """Runs Electrical Rules Check (ERC) on KiCad schematic."""
+        issues = self.kicad_proj.schematic.run_erc()
+        lines = [
+            f"[bold cyan]=== KiCad Electrical Rules Check (ERC): {self.kicad_proj.name} ===[/bold cyan]",
+            f"Components: {len(self.kicad_proj.schematic.components)} | Nets: {len(self.kicad_proj.schematic.nets)}"
+        ]
+        if not issues:
+            lines.append("[bold green]PASSED: No electrical rule errors or floating pins detected.[/bold green]")
+        else:
+            for issue in issues:
+                lvl = issue.get("level", "WARNING")
+                color = "red" if lvl == "ERROR" else "yellow"
+                lines.append(f"  [{color}][{lvl}][/{color}] {issue.get('message')}")
+        return "\n".join(lines)
+
+    def _cmd_kicad_drc(self) -> str:
+        """Runs Design Rules Check (DRC) on KiCad PCB layout."""
+        report = self.kicad_proj.pcb.run_drc()
+        lines = [
+            f"[bold cyan]=== KiCad PCB Design Rules Check (DRC): {self.kicad_proj.name} ===[/bold cyan]",
+            f"Board Size: {self.kicad_proj.pcb.width_mm}x{self.kicad_proj.pcb.height_mm}mm | Tracks: {len(self.kicad_proj.pcb.tracks)} | Vias: {len(self.kicad_proj.pcb.vias)} | Status: {'[bold green]PASSED[/bold green]' if report.get('is_valid') else '[bold red]VIOLATIONS[/bold red]'}"
+        ]
+        issues = report.get("issues", [])
+        if not issues:
+            lines.append("[bold green]PASSED: All clearances, track widths, and annular rings meet manufacturing constraints.[/bold green]")
+        else:
+            for issue in issues:
+                lines.append(f"  [red][VIOLATION][/red] {issue}")
+        return "\n".join(lines)
+
+    def _cmd_kicad_calc(self, args: List[str]) -> str:
+        """Built-in engineering calculators."""
+        if not args:
+            return (
+                "[bold cyan]=== Terminus Engineering Calculators ===[/bold cyan]\n"
+                "  calc track <current_A> [temp_rise_C] [copper_oz] [len_mm] - IPC-2152/2221 PCB track width & resistance\n"
+                "  calc via <drill_mm> [pad_mm] [pcb_thick_mm]               - Via DC resistance, inductance, capacitance\n"
+                "  calc microstrip <width_mm> <height_mm> [Er]               - RF Microstrip impedance Z0 & propagation delay\n"
+                "  calc 555 <R1> <R2> <C>                                    - Astable 555 timer frequency, duty cycle, period\n"
+                "  calc opamp <inv|noninv> <R1> <Rf>                         - Op-Amp closed loop gain (V/V & dB)\n"
+                "  calc divider <Vin> <R1> <R2>                              - Voltage divider output voltage & power\n"
+                "  calc regulator <Vout> [Vref] [R1]                         - LM317 / linear regulator resistor divider\n"
+                "  calc filter <rc|rl|lc> <R> <C/L>                          - Filter cutoff frequency (-3dB fc) & bandwidth\n"
+                "  calc reactance <freq_Hz> <C_or_L>                         - Capacitive (Xc) or Inductive (Xl) reactance\n"
+                "  calc power <Voltage> <Current|Resistance>                 - Ohm's Law and Power Dissipation\n"
+            )
+
+        tool = args[0].lower()
+        if tool in ("track", "trace", "width"):
+            if len(args) < 2:
+                raise ValueError("Usage: calc track <current_A> [temp_rise_C] [copper_oz] [length_mm]")
+            i = parse_eng_unit(args[1])
+            dt = parse_eng_unit(args[2]) if len(args) > 2 else 10.0
+            oz = parse_eng_unit(args[3]) if len(args) > 3 else 1.0
+            l = parse_eng_unit(args[4]) if len(args) > 4 else 50.0
+            res = KiCadCalculator.calculate_track_width(i, temp_rise_deg_c=dt, copper_thickness_oz=oz, track_length_mm=l)
+            return (
+                f"[bold cyan]=== IPC-2152 / IPC-2221 PCB Track Width Calculator ===[/bold cyan]\n"
+                f"  Design Parameters: Current={res['current_amp']}A, ΔT={res['temp_rise_c']}°C, Copper={res['copper_oz']}oz, Length={res['length_mm']}mm\n"
+                f"  * [bold green]External Track Width[/bold green]: {res['external_width_mm']:.3f} mm ({res['external_width_mil']:.1f} mil)\n"
+                f"  * [bold green]Internal Track Width[/bold green]: {res['internal_width_mm']:.3f} mm ({res['internal_width_mil']:.1f} mil)\n"
+                f"  * Track DC Resistance   : {res['resistance_ohm']:.4f} Ω\n"
+                f"  * Voltage Drop          : {res['voltage_drop_v']:.4f} V\n"
+                f"  * Power Loss            : {res['power_loss_w']:.4f} W"
+            )
+
+        elif tool == "via":
+            drill = parse_eng_unit(args[1]) if len(args) > 1 else 0.3
+            pad = parse_eng_unit(args[2]) if len(args) > 2 else 0.6
+            thick = parse_eng_unit(args[3]) if len(args) > 3 else 1.6
+            res = KiCadCalculator.calculate_via_parasitics(drill_dia_mm=drill, pad_dia_mm=pad, pcb_thickness_mm=thick)
+            return (
+                f"[bold cyan]=== PCB Via Parasitics & Ampacity Calculator ===[/bold cyan]\n"
+                f"  Via Geometry: Drill={res['drill_mm']:.2f}mm, Pad={res['pad_mm']:.2f}mm, PCB Thickness={res['pcb_thickness_mm']:.2f}mm\n"
+                f"  * [bold green]DC Resistance[/bold green] : {res['resistance_mohm']:.2f} mΩ\n"
+                f"  * [bold green]Inductance[/bold green]    : {res['inductance_nh']:.2f} nH\n"
+                f"  * [bold green]Capacitance[/bold green]   : {res['capacitance_pf']:.2f} pF\n"
+                f"  * [bold green]Max Current[/bold green]   : {res['max_current_amp']:.2f} A (@10°C rise)"
+            )
+
+        elif tool in ("microstrip", "rf", "transmission"):
+            if len(args) < 3:
+                raise ValueError("Usage: calc microstrip <width_mm> <height_mm> [Er]")
+            w = parse_eng_unit(args[1])
+            h = parse_eng_unit(args[2])
+            er = parse_eng_unit(args[3]) if len(args) > 3 else 4.5
+            res = KiCadCalculator.calculate_microstrip(w, h, substrate_er=er)
+            return (
+                f"[bold cyan]=== RF Microstrip Transmission Line Calculator ===[/bold cyan]\n"
+                f"  Substrate: Width={res['width_mm']:.2f}mm, Dielectric Height={res['height_mm']:.2f}mm, Relative Permittivity Er={res['substrate_er']:.1f}\n"
+                f"  * [bold green]Characteristic Impedance (Z0)[/bold green]: {res['z0_ohms']:.2f} Ω\n"
+                f"  * [bold green]Effective Permittivity (Eff Er)[/bold green]: {res['effective_er']:.3f}\n"
+                f"  * [bold green]Propagation Delay[/bold green]            : {res['delay_ps_per_mm']:.2f} ps/mm"
+            )
+
+        elif tool in ("555", "timer"):
+            if len(args) < 4:
+                raise ValueError("Usage: calc 555 <R1_ohms> <R2_ohms> <C_farads> (e.g. calc 555 10k 47k 100n)")
+            r1 = parse_eng_unit(args[1])
+            r2 = parse_eng_unit(args[2])
+            c = parse_eng_unit(args[3])
+            res = KiCadCalculator.calculate_555_timer(r1, r2, c)
+            return (
+                f"[bold cyan]=== Astable 555 Timer Calculator ===[/bold cyan]\n"
+                f"  Components: R1={format_eng_unit(r1)}Ω, R2={format_eng_unit(r2)}Ω, C={format_eng_unit(c)}F\n"
+                f"  * [bold green]Oscillation Frequency[/bold green]: {format_eng_unit(res['freq_hz'])}Hz\n"
+                f"  * [bold green]Period[/bold green]               : {format_eng_unit(res['period_s'])}s\n"
+                f"  * [bold green]Duty Cycle[/bold green]           : {res['duty_cycle_pct']:.2f} %\n"
+                f"  * High Time (T_high) : {format_eng_unit(res['t_high_s'])}s\n"
+                f"  * Low Time (T_low)   : {format_eng_unit(res['t_low_s'])}s"
+            )
+
+        elif tool in ("opamp", "op-amp", "gain"):
+            if len(args) < 4:
+                raise ValueError("Usage: calc opamp <inv|noninv> <R1_ohms> <Rf_ohms> (e.g. calc opamp noninv 10k 100k)")
+            op_type = args[1]
+            r1 = parse_eng_unit(args[2])
+            rf = parse_eng_unit(args[3])
+            res = KiCadCalculator.calculate_opamp_gain(op_type, r1, rf)
+            return (
+                f"[bold cyan]=== Op-Amp Closed Loop Gain Calculator ===[/bold cyan]\n"
+                f"  Configuration: {res['circuit_type']} | R1={format_eng_unit(r1)}Ω, Rf={format_eng_unit(rf)}Ω\n"
+                f"  * [bold green]Voltage Gain (Av)[/bold green]: {res['gain_v_per_v']:.3f} V/V\n"
+                f"  * [bold green]Gain in dB[/bold green]       : {res['gain_db']:.2f} dB"
+            )
+
+        elif tool in ("divider", "vdiv"):
+            if len(args) < 4:
+                raise ValueError("Usage: calc divider <Vin_V> <R1_ohms> <R2_ohms> (e.g. calc divider 12V 10k 2.2k)")
+            vin = parse_eng_unit(args[1])
+            r1 = parse_eng_unit(args[2])
+            r2 = parse_eng_unit(args[3])
+            res = KiCadCalculator.calculate_voltage_divider(vin, r1, r2)
+            return (
+                f"[bold cyan]=== Voltage Divider Calculator ===[/bold cyan]\n"
+                f"  Input: Vin={res['vin_v']}V | R1={format_eng_unit(r1)}Ω, R2={format_eng_unit(r2)}Ω\n"
+                f"  * [bold green]Output Voltage (Vout)[/bold green]: {res['vout_v']:.4f} V\n"
+                f"  * [bold green]Divider Ratio[/bold green]         : {res['ratio']:.4f} ({res['ratio']*100:.1f}%)\n"
+                f"  * Bleeder Current     : {res['current_ma']:.3f} mA\n"
+                f"  * Total Power Loss    : {res['total_power_mw']:.2f} mW (R1: {res['p_r1_mw']:.2f}mW, R2: {res['p_r2_mw']:.2f}mW)"
+            )
+
+        elif tool in ("regulator", "lm317"):
+            if len(args) < 2:
+                raise ValueError("Usage: calc regulator <Vout_V> [Vref_V] [R1_ohms]")
+            vout = parse_eng_unit(args[1])
+            vref = parse_eng_unit(args[2]) if len(args) > 2 else 1.25
+            r1 = parse_eng_unit(args[3]) if len(args) > 3 else 240.0
+            res = KiCadCalculator.calculate_regulator_divider(vout, vref=vref, r1_ohms=r1)
+            return (
+                f"[bold cyan]=== Linear Regulator Resistor Calculator (LM317 / AMS1117) ===[/bold cyan]\n"
+                f"  Target Vout={res['target_vout']}V, Vref={res['vref_v']}V, R1={format_eng_unit(r1)}Ω\n"
+                f"  * [bold green]Required Resistor R2[/bold green]: {format_eng_unit(res['r2_calculated_ohms'])}Ω"
+            )
+
+        elif tool in ("filter", "rc", "rl", "lc"):
+            ftype = args[1] if tool == "filter" and len(args) > 1 else tool
+            if ftype == "filter":
+                ftype = "rc"
+            r = parse_eng_unit(args[2]) if (tool == "filter" and len(args) > 2) else (parse_eng_unit(args[1]) if len(args) > 1 else 1000.0)
+            c_or_l = parse_eng_unit(args[3]) if (tool == "filter" and len(args) > 3) else (parse_eng_unit(args[2]) if len(args) > 2 else 100e-9)
+            if "rc" in ftype:
+                res = KiCadCalculator.calculate_filter("rc", r_ohms=r, c_farads=c_or_l)
+            elif "rl" in ftype:
+                res = KiCadCalculator.calculate_filter("rl", r_ohms=r, l_henries=c_or_l)
+            else:
+                res = KiCadCalculator.calculate_filter("lc", l_henries=r, c_farads=c_or_l)
+            lines = [f"[bold cyan]=== {res.get('filter_type', 'Filter')} Calculator ===[/bold cyan]"]
+            if "cutoff_freq_hz" in res:
+                lines.append(f"  * [bold green]Cutoff Frequency (-3dB fc)[/bold green]: {format_eng_unit(res['cutoff_freq_hz'])}Hz")
+                lines.append(f"  * Time Constant (τ)            : {format_eng_unit(res['time_constant_s'])}s")
+            elif "resonant_freq_hz" in res:
+                lines.append(f"  * [bold green]Resonant Frequency (f0)[/bold green]    : {format_eng_unit(res['resonant_freq_hz'])}Hz")
+                lines.append(f"  * Characteristic Impedance (Z0): {format_eng_unit(res['characteristic_z0_ohms'])}Ω")
+            return "\n".join(lines)
+
+        elif tool in ("reactance", "xc", "xl"):
+            if len(args) < 3:
+                raise ValueError("Usage: calc reactance <freq_Hz> <C_or_L> (e.g. calc reactance 1kHz 100nF, calc reactance 100kHz 10uH)")
+            f = parse_eng_unit(args[1])
+            val_str = args[2].lower()
+            val = parse_eng_unit(val_str)
+            is_cap = "f" in val_str or "c" in val_str or val < 1e-4
+            if is_cap:
+                res = KiCadCalculator.calculate_reactance(f, c_farads=val)
+                return f"[bold cyan]Capacitive Reactance (Xc):[/bold cyan] [bold green]{format_eng_unit(res['xc_ohms'])}Ω[/bold green] @ {format_eng_unit(f)}Hz (C={format_eng_unit(val)}F)"
+            else:
+                res = KiCadCalculator.calculate_reactance(f, l_henries=val)
+                return f"[bold cyan]Inductive Reactance (Xl):[/bold cyan] [bold green]{format_eng_unit(res['xl_ohms'])}Ω[/bold green] @ {format_eng_unit(f)}Hz (L={format_eng_unit(val)}H)"
+
+        elif tool in ("power", "ohm"):
+            if len(args) < 3:
+                raise ValueError("Usage: calc power <Voltage_V> <Current_A_or_Resistance_Ohm>")
+            v = parse_eng_unit(args[1])
+            val_str = args[2].lower()
+            val = parse_eng_unit(val_str)
+            is_curr = "a" in val_str or "ma" in val_str or "ua" in val_str
+            if is_curr:
+                res = KiCadCalculator.calculate_power(v, current_a=val)
+                return f"[bold cyan]Power Dissipation:[/bold cyan] [bold yellow]{format_eng_unit(res['power_w'])}W[/bold yellow] | Current={format_eng_unit(res['current_a'])}A, Resistance={format_eng_unit(res['resistance_ohm'])}Ω"
+            else:
+                res = KiCadCalculator.calculate_power(v, resistance_ohm=val)
+                return f"[bold cyan]Power Dissipation:[/bold cyan] [bold yellow]{format_eng_unit(res['power_w'])}W[/bold yellow] | Current={format_eng_unit(res['current_a'])}A, Resistance={format_eng_unit(res['resistance_ohm'])}Ω"
+
+        raise ValueError(f"Unknown calculator tool '{tool}'. Run 'calc' for options.")
 
     # --- Unified Handlers ---
     def _handle_unified(self, line: str, tokens: List[str]) -> str:

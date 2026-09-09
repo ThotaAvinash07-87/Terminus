@@ -267,7 +267,66 @@ class TerminusFigure:
             img = Image.new("RGB", (800, 450), color=(15, 18, 24))
             img.save(str(out_p))
             return True, f"Saved basic PNG placeholder (Matplotlib recommended) -> {out_p}"
-        return False, "Matplotlib and Pillow not found on host. Install with 'pip install matplotlib pillow'."
+    @staticmethod
+    def export_pcb_to_png(pcb: Any, schematic: Any, output_path: Union[str, Path], dpi: int = 200) -> Tuple[bool, str]:
+        """Renders high-resolution 2D PCB board layout with authentic layer colors."""
+        out_p = Path(output_path)
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+
+        if not HAS_MATPLOTLIB:
+            if HAS_PIL:
+                img = Image.new("RGB", (1000, 800), color=(10, 30, 20))
+                img.save(str(out_p))
+                return True, f"Saved basic PCB image -> {out_p}"
+            return False, "Matplotlib required for high-res PCB artwork rendering."
+
+        try:
+            fig, ax = plt.subplots(figsize=(10, 8), facecolor="#0a1a14", dpi=dpi)
+            ax.set_facecolor("#0e2b1f")  # Solder mask green
+
+            # Board Outline (Edge.Cuts)
+            rect = plt.Rectangle((0, 0), pcb.width_mm, pcb.height_mm, fill=True, color="#0e2b1f", edgecolor="#e6db74", linewidth=2.5)
+            ax.add_patch(rect)
+
+            # Copper Tracks
+            for t in pcb.tracks:
+                t_color = "#e63946" if t.layer == "F.Cu" else "#457b9d"  # F.Cu Red, B.Cu Blue
+                ax.plot([t.start_x_mm, t.end_x_mm], [t.start_y_mm, t.end_y_mm], color=t_color, linewidth=max(1.0, t.width_mm * 3.0), solid_capstyle='round')
+
+            # Vias
+            for v in pcb.vias:
+                via_pad = plt.Circle((v.x_mm, v.y_mm), v.pad_dia_mm/2, color="#ffd166")
+                via_hole = plt.Circle((v.x_mm, v.y_mm), v.drill_mm/2, color="#0a1a14")
+                ax.add_patch(via_pad)
+                ax.add_patch(via_hole)
+
+            # Footprints and Pads
+            for ref, comp in pcb.components.items():
+                pads = comp.get_absolute_pad_locations(schematic)
+                for p in pads:
+                    pad_color = "#ffd166" if p.is_tht else ("#ef476f" if p.layer == "F.Cu" else "#118ab2")
+                    p_rect = plt.Rectangle((p.x_mm - p.width_mm/2, p.y_mm - p.height_mm/2), p.width_mm, p.height_mm, color=pad_color)
+                    ax.add_patch(p_rect)
+                    if p.is_tht and p.drill_mm > 0:
+                        hole = plt.Circle((p.x_mm, p.y_mm), p.drill_mm/2, color="#0a1a14")
+                        ax.add_patch(hole)
+
+                # Silkscreen reference text
+                ax.text(comp.x_mm, comp.y_mm, ref, color="#f8f9fa", fontsize=8, fontweight="bold", ha="center", va="center")
+
+            ax.set_xlim(-5, pcb.width_mm + 5)
+            ax.set_ylim(-5, pcb.height_mm + 5)
+            ax.set_aspect('equal')
+            ax.set_title(f"KiCad PCB Layout Artwork: {pcb.name} ({pcb.width_mm:.0f}x{pcb.height_mm:.0f} mm)", color="#58a6ff", fontsize=11, fontweight="bold", pad=12)
+            ax.tick_params(colors="#8b949e", labelsize=8)
+            for spine in ax.spines.values():
+                spine.set_color("#30363d")
+
+            plt.savefig(str(out_p), dpi=dpi, facecolor=fig.get_facecolor(), edgecolor='none', bbox_inches='tight')
+            plt.close(fig)
+            return True, f"Rendered high-resolution KiCad PCB graphic ({dpi} DPI) -> {out_p}"
+        except Exception as e:
+            return False, f"Failed to export PCB PNG: {str(e)}"
 
 
 class TerminalImagePreviewer:

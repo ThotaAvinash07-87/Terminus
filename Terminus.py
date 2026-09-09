@@ -81,7 +81,7 @@ def run_cli_repl(
     console.print("[bold green]=== TerminusECE Interactive Command Line Shell ===[/bold green]")
     session_badge = f" [bold magenta][Session #{bridge.ipc_client.session_id}][/bold magenta]" if bridge.ipc_client.is_connected else ""
     console.print(f"Unified EDA command workspace.{session_badge} Type [bold cyan]'help'[/bold cyan] for commands, [bold cyan]'exit'[/bold cyan] to exit.")
-    console.print("Quick Start: Type [bold yellow]'mode circuit'[/bold yellow] for LTspice engine, [bold yellow]'mode dynamic'[/bold yellow] for Simulink engine.\n")
+    console.print("Quick Start: 'mode circuit' (LTspice), 'mode dynamic' (Simulink), 'mode kicad' (KiCad EDA), 'mode numerical' (MATLAB), 'mode digital' (Xilinx), 'mode embedded' (Arduino).\n")
 
     while True:
         try:
@@ -93,7 +93,7 @@ def run_cli_repl(
             if line.lower() in ("exit", "quit", "q"):
                 console.print("[yellow]Exiting TerminusECE CLI. Goodbye![/yellow]")
                 break
-            if line.lower() == "clear" and bridge.mode not in ("DYNAMIC", "CIRCUIT"):
+            if line.lower() == "clear" and bridge.mode not in ("DYNAMIC", "CIRCUIT", "KICAD"):
                 os.system("cls" if os.name == "nt" else "clear")
                 continue
 
@@ -125,7 +125,7 @@ def main() -> None:
         "--mode", "-m",
         type=str,
         default="CIRCUIT",
-        help="Initial subsystem mode (circuit, dynamic, numerical, digital, embedded)"
+        help="Initial subsystem mode (circuit, dynamic, numerical, digital, embedded, kicad)"
     )
     parser.add_argument(
         "--session", "-s",
