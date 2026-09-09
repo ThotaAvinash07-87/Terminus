@@ -1,4 +1,4 @@
-# TerminusECE
+# Terminus
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](http://makeapullrequest.com)
@@ -9,14 +9,14 @@
 
 ---
 
-## ⚡ Overview
+##  Overview
 
 The traditional ECE software ecosystem is severely fragmented by bloated, heavy GUI applications—juggling **KiCad** for PCB design, **LTspice** for analog circuits, **Simulink** for dynamic systems, **MATLAB** for signal processing, **Xilinx Vivado** for digital logic, and **Arduino / Code Composer Studio** for embedded hardware.
 
-**TerminusECE** unifies all six foundational engineering disciplines into a single, lightning-fast, keyboard-driven terminal environment. Operating on a strict philosophy: **Engineering is mathematics, and mathematics is best expressed with precision, clarity, and speed.**
+**Terminus** unifies all six foundational engineering disciplines into a single, lightning-fast, keyboard-driven terminal environment. Operating on a strict philosophy: **Engineering is mathematics, and mathematics is best expressed with precision, clarity, and speed.**
 
 ```
-       TerminusECE Unified Engineering Architecture
+       Terminus Unified Engineering Architecture
 ┌────────────────────────────────────────────────────────┐
 │  KiCad EDA  │  LTspice  │  Simulink  │  MATLAB  │  Xilinx │
 │  PCB Design │  Circuits │  Dynamics  │  DSP/AST │  Logic  │
@@ -31,9 +31,9 @@ The traditional ECE software ecosystem is severely fragmented by bloated, heavy 
 
 ---
 
-## 🚀 Key Capabilities & Subsystems
+##  Key Capabilities & Subsystems
 
-### 1. 📐 KiCad EDA Schematic & PCB Layout Mode (`mode kicad`)
+### 1.  KiCad EDA Schematic & PCB Layout Mode (`mode kicad`)
 * **Single-Folder Project Management**: All design files are organized together in `Documents/Terminus Files/KiCad/<ProjectName>/`:
   * `<Project>.tkcad` — Terminus EDA Project Manifest & DRC constraints
   * `<Project>.tsch` — Schematic sheets, components, and pin interconnects
@@ -46,7 +46,7 @@ The traditional ECE software ecosystem is severely fragmented by bloated, heavy 
 * **Design Rules Check (DRC)**: Validates board edge clearances, minimum track widths, annular rings, and courtyard overlaps.
 * **500+ Component & Footprint Library**: Full catalog of SMD passives (0201 to 2512), THT resistors/capacitors, SOD/SMA/SMB diodes, SOT-23/SOT-223/TO-92/TO-220 transistors, SOIC/DIP/QFP/QFN ICs, pin headers, screw terminals, and USB-C.
 
-### 2. ⚡ Analog Devices LTspice Circuit Engine (`mode circuit`)
+### 2.  Analog Devices LTspice Circuit Engine (`mode circuit`)
 * **Modified Nodal Analysis (MNA)**: High-accuracy SPICE simulation engine with companion models for resistors, capacitors, inductors, diodes, BJTs, MOSFETs, and independent/dependent sources.
 * **Full Simulation Directives**:
   * `.op` — DC Operating Point with Newton-Raphson iteration & Gmin stepping
@@ -57,24 +57,24 @@ The traditional ECE software ecosystem is severely fragmented by bloated, heavy 
 * **Design Rule & Topology Diagnostics**: Instant detection of floating nodes, shorted sources, singular matrix hazards, and missing ground references.
 * **Interactive Probing**: Measure node voltages, branch currents, peak-to-peak, and RMS values with live ASCII waveform rendering.
 
-### 3. 🔄 MathWorks Simulink Dynamic Systems Engine (`mode dynamic`)
+### 3.  MathWorks Simulink Dynamic Systems Engine (`mode dynamic`)
 * **17 Classified Block Libraries (100+ Blocks)**: Continuous, Discrete, Math, Discontinuities, Logic & Bit, Lookup Tables, Matrix Ops, Routing, Sources, Sinks, Signal Attributes, Dashboard, Verification, and Subsystems.
 * **Multi-Algorithm Numerical ODE Solvers**: Runge-Kutta 4th Order (`rk4`), Forward Euler (`euler`), Heun 2nd Order (`heun`), and Adaptive Dormand-Prince (`ode45`).
 * **Model Advisor Diagnostics**: Automatic pre-flight verification identifying direct-feedthrough algebraic loops, unconnected input ports, parameter bounds violations, and multi-rate transition issues.
 * **Real-Time Parameter Tuning**: Tune gains, time constants, and limits on live running models without restarting simulation.
 
-### 4. 📊 MathWorks MATLAB & DSP Workbench (`mode numerical`)
+### 4.  MathWorks MATLAB & DSP Workbench (`mode numerical`)
 * **Vectorized AST Mathematical Evaluator**: Evaluate matrix algebra, trigonometric expressions, and NumPy-backed linear algebra directly from the command bar.
 * **DSP Signal Processing Suite**: Design Butterworth, Chebyshev, and FIR windowed digital filters; compute Power Spectral Density (PSD), Time-Frequency Spectrograms, and Fast Fourier Transforms (FFT).
 * **Control Systems & Transforms**: Continuous and discrete transfer functions $H(s)$ and $H(z)$, Laplace transforms, Z-plane analysis, and step response.
 * **Universal 300 DPI PNG Figure Exporter**: Render publication-quality technical plots with metric banners and view 24-bit Truecolor ANSI graphic previews directly in your terminal.
 
-### 5. 🔲 AMD Xilinx Digital Logic & HDL Engine (`mode digital`)
+### 5.  AMD Xilinx Digital Logic & HDL Engine (`mode digital`)
 * **Combinational & Sequential Simulation**: Logic gates (AND, OR, NOT, XOR, NAND, NOR, XNOR) and Flip-Flops (D-FF, JK-FF, T-FF).
 * **Discrete-Event Simulation**: Cycle-accurate clock generation, signal propagation delays, and multi-channel ASCII timing diagrams.
 * **Truth Table Generator**: Automatically evaluate boolean expressions and generate complete truth tables.
 
-### 6. 🔌 Real-Hardware Embedded IDE & Microcontroller Workbench (`mode embedded`)
+### 6.  Real-Hardware Embedded IDE & Microcontroller Workbench (`mode embedded`)
 * **Auto USB COM Port Detection**: Scans physical USB buses for connected hardware signatures (FTDI, CH340, CP2102, Atmel, ST-Link, ESP-JTAG).
 * **30+ Supported Board Profiles**: Arduino Uno/Nano/Mega, ESP32, ESP8266, STM32 BluePill/Nucleo, Raspberry Pi Pico, TI C2000, and RISC-V.
 * **Toolchain Compiler & Firmware Uploader**: Seamless compilation via local toolchains (`avr-gcc`, `arduino-cli`) with Flash/SRAM usage analysis and direct hardware uploading over USB.
@@ -83,7 +83,7 @@ The traditional ECE software ecosystem is severely fragmented by bloated, heavy 
 
 ---
 
-## 🧮 Built-in Engineering Calculators
+##  Built-in Engineering Calculators
 
 Access engineering calculation tools in both **KiCad** and **LTspice / Circuit** modes via the `calc` command:
 
@@ -102,7 +102,7 @@ Access engineering calculation tools in both **KiCad** and **LTspice / Circuit**
 
 ---
 
-## 📁 Centralized Storage & Custom Terminus File Extensions
+##  Centralized Storage & Custom Terminus File Extensions
 
 Terminus maintains organized, mode-specific project folders inside `Documents/Terminus Files/`:
 
@@ -119,7 +119,7 @@ Documents/Terminus Files/
 
 ---
 
-## 🌐 High-Capacity Multi-Terminal Session Networking
+##  High-Capacity Multi-Terminal Session Networking
 
 Terminus supports high-capacity multi-terminal networking connecting **500+ concurrent terminal sessions** across local and LAN devices:
 
@@ -130,7 +130,7 @@ Terminus supports high-capacity multi-terminal networking connecting **500+ conc
 
 ---
 
-## ⌨️ Command Cheat Sheet
+##  Command Cheat Sheet
 
 ### Switching Modes
 ```sh
@@ -234,6 +234,6 @@ python -m unittest discover -s tests
 
 ---
 
-## 📜 License
+##  License
 
-TerminusECE is licensed under the **MIT License**. See [LICENSE](LICENSE) for details.
+Terminus is licensed under the **MIT License**. See [LICENSE](LICENSE) for details.
