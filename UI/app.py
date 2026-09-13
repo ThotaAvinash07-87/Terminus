@@ -14,6 +14,8 @@ from textual.widgets import Header, Footer, Input, RichLog, Static
 
 from CORE.common_math import parse_eng_unit, format_eng_unit, Waveform, SignalMetrics, split_smart_statements
 from CORE.ascii_canvas import AsciiCanvas, AsciiPlotter, AsciiBodePlotter, SchematicVisualizer
+from CORE.interactive_canvas import InteractiveSchematicCanvas, CanvasBlock
+from UI.split_workspace import SplitWorkspaceRenderer
 from CORE.ipc_router import (
     IPCRouter, IPCClient, TerminalSessionInfo, CrossModeSignalValidator,
     CrossModeValidationResult, ipc_router_instance, ipc_client_instance
@@ -151,6 +153,10 @@ class TerminusEngineBridge:
         self.ascii_plotter = self.real_serial.plotter
         self.active_serial_bridge: Optional[HardwareSerialBridge] = None
 
+        # Interactive 2D Canvas & Terminal History
+        self.canvas = InteractiveSchematicCanvas(width_chars=60, height_chars=16)
+        self.cmd_history: List[str] = []
+
         # Structured Project Storage (User's Documents/Terminus Files)
         self.storage = StorageManager.get_instance()
 
@@ -211,52 +217,113 @@ class TerminusEngineBridge:
         tokens = line.split()
         first = tokens[0].lower()
 
+        # Split screen workspace viewer
+        if first in ("screen", "workspace", "view", "split", "gui", "refresh"):
+            return self.render_split_workspace()
+
+        # Canvas Interactive Positioning Commands
+        if first in ("move", "pos", "relocate") and len(tokens) >= 4:
+            ref = tokens[1].upper()
+            x = int(tokens[2])
+            y = int(tokens[3])
+            ok = self.canvas.move_block(ref, x, y)
+            if self.mode == "KICAD" and ref in self.kicad_proj.pcb.components:
+                self.kicad_proj.pcb.place_component(ref, float(x), float(y))
+            if ok:
+                self._record_history(line, f"Moved {ref} -> ({x}, {y})")
+                return self.render_split_workspace(f"Moved {ref} to ({x}, {y})")
+            return f"[yellow]Component '{ref}' not found on canvas.[/yellow]"
+
+        if first == "select" and len(tokens) >= 2:
+            ref = tokens[1].upper()
+            b = self.canvas.select_block(ref)
+            if b:
+                return self.render_split_workspace(f"Selected {ref} at ({b.x}, {b.y})")
+            return f"[yellow]Block '{ref}' not found.[/yellow]"
+
         # Global commands
         if first == "help":
-            return self._cmd_help()
+            out = self._cmd_help()
+            self._record_history(line, "Displayed help manual.")
+            return out
 
         if first == "mode":
             if len(tokens) < 2:
-                return f"Current mode: {self.mode}. Options: circuit, numerical, dynamic, digital, embedded, unified"
+                return f"Current mode: {self.mode}. Options: circuit, numerical, dynamic, digital, embedded, kicad, unified"
             new_mode = self.switch_mode(tokens[1])
-            return f"Context switched to: [bold magenta]{new_mode}[/bold magenta]"
+            self._record_history(line, f"Context switched to {new_mode}")
+            return self.render_split_workspace(f"Context switched to {new_mode}")
 
         if first == "file":
-            return self._handle_file_command(line, split_smart_args(line))
+            out = self._handle_file_command(line, split_smart_args(line))
+            self._record_history(line, out)
+            return out
 
         if first in ("import", "include"):
-            return self._handle_import_command(line, tokens)
+            out = self._handle_import_command(line, tokens)
+            self._record_history(line, out)
+            return out
 
         if first == "export":
-            return self._cmd_export(tokens[1:])
+            out = self._cmd_export(tokens[1:])
+            self._record_history(line, out)
+            return out
 
         if first in ("session", "room", "team"):
             if first in ("room", "team"):
-                return self._handle_session_command(f"session room {' '.join(tokens[1:])}", ["session", "room"] + tokens[1:])
-            return self._handle_session_command(line, tokens)
+                out = self._handle_session_command(f"session room {' '.join(tokens[1:])}", ["session", "room"] + tokens[1:])
+            else:
+                out = self._handle_session_command(line, tokens)
+            self._record_history(line, out)
+            return out
 
         if first == "ipc":
-            return self._cmd_ipc(tokens[1:])
+            out = self._cmd_ipc(tokens[1:])
+            self._record_history(line, out)
+            return out
 
         # Universal High-Resolution PNG Figure Generator & In-Terminal Truecolor Previewer
         if first in ("png", "figure", "preview", "image", "render"):
-            return self._handle_figure_image_command(line, tokens)
+            out = self._handle_figure_image_command(line, tokens)
+            self._record_history(line, out)
+            return out
 
         # Route to mode-specific handler
         if self.mode == "CIRCUIT":
-            return self._handle_circuit(line, tokens)
+            out = self._handle_circuit(line, tokens)
         elif self.mode == "NUMERICAL":
-            return self._handle_numerical(line, tokens)
+            out = self._handle_numerical(line, tokens)
         elif self.mode == "DYNAMIC":
-            return self._handle_dynamic(line, tokens)
+            out = self._handle_dynamic(line, tokens)
         elif self.mode == "DIGITAL":
-            return self._handle_digital(line, tokens)
+            out = self._handle_digital(line, tokens)
         elif self.mode == "EMBEDDED":
-            return self._handle_embedded(line, tokens)
+            out = self._handle_embedded(line, tokens)
         elif self.mode == "KICAD":
-            return self._handle_kicad(line, tokens)
+            out = self._handle_kicad(line, tokens)
         else:
-            return self._handle_unified(line, tokens)
+            out = self._handle_unified(line, tokens)
+
+        self._record_history(line, out)
+        return out
+
+    def _record_history(self, cmd: str, result: str):
+        """Records command and summary into scrolling history log."""
+        first_line = result.splitlines()[0] if result else "OK"
+        if len(first_line) > 80:
+            first_line = first_line[:77] + "..."
+        self.cmd_history.append(f"[bold cyan]> {cmd}[/bold cyan] [dim]──►[/dim] {first_line}")
+        if len(self.cmd_history) > 30:
+            self.cmd_history.pop(0)
+
+    def render_split_workspace(self, status_msg: str = "") -> str:
+        try:
+            return SplitWorkspaceRenderer(self).render(status_msg)
+        except Exception:
+            try:
+                return SplitWorkspaceRenderer.render(self, status_msg)
+            except Exception:
+                return status_msg or f"Workspace Active ({self.mode})"
 
     def _cmd_help(self) -> str:
         help_texts = [
@@ -1313,49 +1380,86 @@ class TerminusEngineBridge:
                 self.figure.set_subplot_grid(r, c, idx)
                 return f"[green]Active subplot set to:[/green] ({r}x{c}, index {idx})"
 
-        # 3. Export PNG: png [filename.png] / figure save [filename.png]
-        out_name = tokens[1] if (len(tokens) > 1 and tokens[1].lower() not in ("save", "export", "render")) else (tokens[2] if len(tokens) > 2 else "")
+        # 3. Export PNG: png [graph|card|pcb] [filename.png] / figure save [filename.png]
+        sub_type = ""
+        out_name = ""
+        if len(tokens) > 1:
+            arg1 = tokens[1].lower()
+            if arg1 in ("graph", "waveform", "curve", "pure"):
+                sub_type = "graph"
+                out_name = tokens[2] if len(tokens) > 2 else ""
+            elif arg1 in ("card", "metrics", "data", "report"):
+                sub_type = "card"
+                out_name = tokens[2] if len(tokens) > 2 else ""
+            elif arg1 in ("pcb", "board", "layout"):
+                sub_type = "pcb"
+                out_name = tokens[2] if len(tokens) > 2 else ""
+            elif arg1 not in ("save", "export", "render"):
+                out_name = tokens[1]
+            elif len(tokens) > 2:
+                out_name = tokens[2]
+
+        proj_name = "figure"
+        if self.mode == "NUMERICAL":
+            proj_name = self.matlab_proj.project_name
+        elif self.mode == "CIRCUIT":
+            proj_name = self.circuit_netlist.name or "circuit"
+        elif self.mode == "DYNAMIC":
+            proj_name = self.dynamic_diagram.name or "model"
+        elif self.mode == "EMBEDDED":
+            proj_name = self.sketch_proj.project_name
+        elif self.mode == "KICAD":
+            proj_name = self.kicad_proj.name
+        elif self.mode == "DIGITAL":
+            proj_name = self.logic_circuit.name or "logic"
+
         if not out_name:
-            if self.mode == "NUMERICAL":
-                out_name = f"{self.matlab_proj.project_name}_figure.png"
-            elif self.mode == "CIRCUIT":
-                out_name = f"{self.circuit_netlist.name}_circuit.png"
-            elif self.mode == "DYNAMIC":
-                out_name = f"{self.dynamic_diagram.name}_scopes.png"
-            elif self.mode == "EMBEDDED":
-                out_name = f"{self.sketch_proj.project_name}_telemetry.png"
-            else:
-                out_name = f"{self.mode.lower()}_figure.png"
+            suffix = f"_{sub_type}" if sub_type else ""
+            out_name = f"{proj_name}{suffix}.png"
 
         if not out_name.lower().endswith(".png"):
             out_name += ".png"
 
-        # Determine target folder: project directory or mode directory
+        # Determine target folder: active project folder or mode directory
         if self.mode == "NUMERICAL":
             dest_path = self.matlab_proj.get_project_dir() / out_name
         elif self.mode == "EMBEDDED":
             dest_path = self.sketch_proj.get_project_dir() / out_name
+        elif self.mode == "KICAD":
+            dest_path = self.kicad_proj.get_project_dir() / out_name
         else:
             dest_path = self.storage.get_mode_dir(self.mode) / out_name
 
         # Ensure figure has trace data from current mode
         has_traces = any(sp.traces for sp in self.figure.subplots.values())
-        if not has_traces:
+        if not has_traces and sub_type != "pcb":
             self._auto_populate_figure_from_active_mode()
 
-        ok, msg = self.figure.export_to_png(dest_path, dpi=200)
+        if sub_type == "graph":
+            ok, msg = self.figure.export_pure_graph_png(dest_path, dpi=300)
+            render_type_title = "High-Precision Vector Graph PNG"
+        elif sub_type == "card":
+            ok, msg = self.figure.export_metrics_card_png(dest_path, dpi=300)
+            render_type_title = "Technical Report Metrics Card PNG"
+        elif sub_type == "pcb" or (self.mode == "KICAD" and not has_traces):
+            ok, msg = TerminusFigure.export_pcb_to_png(self.kicad_proj.pcb, self.kicad_proj.schematic, dest_path, dpi=200)
+            render_type_title = "High-Resolution KiCad PCB Layout Artwork PNG"
+        else:
+            ok, msg = self.figure.export_to_png(dest_path, dpi=200)
+            render_type_title = "Engineering Figure & Metrics PNG"
+
         if not ok:
             return f"[bold red]Figure Export Failed:[/bold red] {msg}"
 
         # Generate Truecolor In-Terminal ANSI preview
         preview_str = TerminalImagePreviewer.preview_image(dest_path)
         return (
-            f"[bold green]=== High-Resolution PNG Graphic Generated ===[/bold green]\n"
+            f"[bold green]=== {render_type_title} Generated ===[/bold green]\n"
             f"  Subsystem Mode : [bold cyan]{self.mode}[/bold cyan]\n"
-            f"  Resolution     : 2400 x 1200 px (300 DPI)\n"
+            f"  Resolution     : 300 DPI Vector High-Precision\n"
             f"  Saved Image    : [bold white]{dest_path}[/bold white]\n\n"
             f"{preview_str}\n"
-            f"[dim]Saved to project directory. Ready for reports, papers, and presentations.[/dim]"
+            f"[dim]Saved into project directory. Ready for reports, documentation, and fabrication.[/dim]"
         )
 
     def _auto_populate_figure_from_active_mode(self):

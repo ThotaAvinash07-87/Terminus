@@ -218,7 +218,7 @@ class TestTerminusBridgeMatlabAndFigureCommands(unittest.TestCase):
         self.bridge.execute_command("t = 0:0.01:0.1; s = cos(2*pi*10*t)")
         self.bridge.execute_command("plot(t, s)")
         out_png = self.bridge.execute_command("png matlab_test.png")
-        self.assertIn("High-Resolution PNG Graphic Generated", out_png)
+        self.assertIn("PNG Generated", out_png)
         self.assertIn("matlab_test.png", out_png)
 
         # Preview command
@@ -234,7 +234,7 @@ class TestTerminusBridgeMatlabAndFigureCommands(unittest.TestCase):
         self.bridge.execute_command("connect V1.n | 0")
         self.bridge.execute_command("run .op")
         out_ckt_png = self.bridge.execute_command("png circuit_test.png")
-        self.assertIn("High-Resolution PNG Graphic Generated", out_ckt_png)
+        self.assertIn("PNG Generated", out_ckt_png)
 
 
 if __name__ == '__main__':

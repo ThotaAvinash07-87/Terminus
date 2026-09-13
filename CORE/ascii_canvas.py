@@ -51,6 +51,13 @@ class RoutePath:
 class AsciiCanvas:
     """2D character grid with drawing primitives, wire routing, and component blocks."""
     
+    @staticmethod
+    def format_component_short_block(ref: str, value: str = "", comp_type: str = "") -> str:
+        """Formats compact standard electrical symbol block (e.g. [ R R1:10k ], [ C C1:100n ], [ U U1:OP-AMP ])."""
+        c_type = comp_type.upper() if comp_type else (ref[0].upper() if ref else "U")
+        val_str = f":{value}" if value else ""
+        return f"[ {c_type} {ref}{val_str} ]"
+
     def __init__(self, width: int = 80, height: int = 24, bg_char: str = " "):
         self.width = width
         self.height = height

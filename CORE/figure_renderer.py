@@ -113,6 +113,27 @@ class TechnicalReportMetrics:
 
         return metrics
 
+    def to_summary_line(self) -> str:
+        """Returns compact 2-4 line formatted technical metrics string."""
+        parts = []
+        if self.v_peak is not None:
+            parts.append(f"Vpk={self.v_peak:.3g}V")
+        if self.v_rms is not None:
+            parts.append(f"Vrms={self.v_rms:.3g}V")
+        if self.v_pp is not None:
+            parts.append(f"Vpp={self.v_pp:.3g}V")
+        if self.dominant_freq is not None:
+            df = f"{self.dominant_freq/1e3:.1f}kHz" if self.dominant_freq >= 1e3 else f"{self.dominant_freq:.1f}Hz"
+            parts.append(f"f0={df}")
+        if self.thd_pct is not None:
+            parts.append(f"THD={self.thd_pct:.2f}%")
+        if self.snr_db is not None:
+            parts.append(f"SNR={self.snr_db:.1f}dB")
+
+        if not parts:
+            return "  * Status: Metrics ready upon active simulation trace"
+        return "  * " + " | ".join(parts[:3]) + ("\n  * " + " | ".join(parts[3:]) if len(parts) > 3 else "")
+
 
 class TerminusFigure:
     """Manages multi-subplot figures, technical metadata, and universal rendering."""
@@ -261,6 +282,95 @@ class TerminusFigure:
         except Exception as e:
             return False, f"Failed to export PNG: {str(e)}"
 
+    def export_pure_graph_png(self, output_path: Union[str, Path], dpi: int = 300, dark_mode: bool = True) -> Tuple[bool, str]:
+        """Renders only the high-precision vector mathematical waveform/graph curves without banners."""
+        out_p = Path(output_path)
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+        if not HAS_MATPLOTLIB:
+            return self._export_fallback_png(out_p)
+
+        try:
+            bg_canvas = "#0b0e14" if dark_mode else "#ffffff"
+            bg_axes = "#151922" if dark_mode else "#f8f9fa"
+            text_color = "#f0f6fc" if dark_mode else "#1f2328"
+            grid_color = "#2d333b" if dark_mode else "#d0d7de"
+            border_color = "#30363d" if dark_mode else "#d0d7de"
+
+            fig, ax = plt.subplots(figsize=(10, 6), facecolor=bg_canvas, dpi=dpi)
+            ax.set_facecolor(bg_axes)
+
+            # Draw traces from active subplot
+            sp_data = self._ensure_subplot(self.current_index)
+            ax.set_title(sp_data.title or self.title, fontsize=12, fontweight="bold", color="#58a6ff", pad=10)
+            ax.set_xlabel(sp_data.xlabel or "Time (s)", fontsize=10, color=text_color)
+            ax.set_ylabel(sp_data.ylabel or "Amplitude", fontsize=10, color=text_color)
+            ax.grid(True, linestyle="--", alpha=0.5, color=grid_color)
+
+            for trace in sp_data.traces:
+                if trace.style == "step":
+                    ax.step(trace.x, trace.y, color=trace.color, label=trace.label, linewidth=2.0, where='post')
+                elif trace.style == "stem":
+                    ax.stem(trace.x, trace.y, linefmt=trace.color, markerfmt="o", basefmt="r-")
+                else:
+                    ax.plot(trace.x, trace.y, color=trace.color, label=trace.label, linewidth=2.0)
+
+            if len(sp_data.traces) > 1 or (sp_data.traces and sp_data.traces[0].label != "Signal"):
+                leg = ax.legend(loc="upper right", fontsize=9, facecolor=bg_axes, edgecolor=border_color)
+                for t in leg.get_texts(): t.set_color(text_color)
+
+            for spine in ax.spines.values():
+                spine.set_color(border_color)
+            ax.tick_params(colors=text_color, labelsize=9)
+
+            plt.savefig(str(out_p), dpi=dpi, facecolor=fig.get_facecolor(), edgecolor='none', bbox_inches='tight')
+            plt.close(fig)
+            return True, f"Rendered high-precision graph PNG ({dpi} DPI) -> {out_p}"
+        except Exception as e:
+            return False, f"Failed to export pure graph PNG: {str(e)}"
+
+    def export_metrics_card_png(self, output_path: Union[str, Path], dpi: int = 300) -> Tuple[bool, str]:
+        """Renders an ultra-sleek, publication-grade dark-themed Technical Data Card graphic."""
+        out_p = Path(output_path)
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+        if not HAS_MATPLOTLIB:
+            return self._export_fallback_png(out_p)
+
+        try:
+            fig, ax = plt.subplots(figsize=(8, 4.5), facecolor="#0b0e14", dpi=dpi)
+            ax.set_facecolor("#151922")
+            ax.axis('off')
+
+            # Draw card border
+            rect = plt.Rectangle((0.02, 0.02), 0.96, 0.96, transform=ax.transAxes, fill=True, facecolor="#151922", edgecolor="#58a6ff", linewidth=2.0)
+            ax.add_patch(rect)
+
+            m = self.metrics or TechnicalReportMetrics(mode="ENGINEERING", project_name=self.title)
+            ax.text(0.06, 0.88, f"TERMINUS ECE | TECHNICAL DATA CARD", transform=ax.transAxes, fontsize=12, fontweight="bold", color="#58a6ff")
+            ax.text(0.06, 0.80, f"Mode: {m.mode.upper()}  |  Project: {m.project_name}  |  Date: {m.timestamp}", transform=ax.transAxes, fontsize=8.5, color="#8b949e", family="monospace")
+
+            # Metrics Table Grid
+            y_pos = 0.66
+            metrics_grid = [
+                ("Peak Voltage (Vpk)", f"{m.v_peak:.3f} V" if m.v_peak is not None else "N/A"),
+                ("RMS Voltage (Vrms)", f"{m.v_rms:.3f} V" if m.v_rms is not None else "N/A"),
+                ("Peak-to-Peak (Vpp)", f"{m.v_pp:.3f} V" if m.v_pp is not None else "N/A"),
+                ("Sampling Frequency (Fs)", f"{m.sampling_freq/1e3:.1f} kHz" if m.sampling_freq and m.sampling_freq >= 1e3 else (f"{m.sampling_freq:.1f} Hz" if m.sampling_freq else "N/A")),
+                ("Dominant Frequency (f0)", f"{m.dominant_freq:.1f} Hz" if m.dominant_freq is not None else "N/A"),
+                ("Total Harmonic Distortion", f"{m.thd_pct:.2f} %" if m.thd_pct is not None else "N/A"),
+                ("Signal-to-Noise Ratio", f"{m.snr_db:.1f} dB" if m.snr_db is not None else "N/A"),
+            ]
+
+            for label, val in metrics_grid:
+                ax.text(0.08, y_pos, label, transform=ax.transAxes, fontsize=9.5, color="#f0f6fc")
+                ax.text(0.70, y_pos, val, transform=ax.transAxes, fontsize=9.5, fontweight="bold", color="#76ff03", family="monospace")
+                y_pos -= 0.085
+
+            plt.savefig(str(out_p), dpi=dpi, facecolor=fig.get_facecolor(), edgecolor='none', bbox_inches='tight')
+            plt.close(fig)
+            return True, f"Rendered Technical Data Card PNG ({dpi} DPI) -> {out_p}"
+        except Exception as e:
+            return False, f"Failed to export metrics card: {str(e)}"
+
     def _export_fallback_png(self, out_p: Path) -> Tuple[bool, str]:
         """Fallback pure-Python bitmap exporter when matplotlib is not available."""
         if HAS_PIL:
@@ -285,7 +395,7 @@ class TerminusFigure:
             ax.set_facecolor("#0e2b1f")  # Solder mask green
 
             # Board Outline (Edge.Cuts)
-            rect = plt.Rectangle((0, 0), pcb.width_mm, pcb.height_mm, fill=True, color="#0e2b1f", edgecolor="#e6db74", linewidth=2.5)
+            rect = plt.Rectangle((0, 0), pcb.width_mm, pcb.height_mm, fill=True, facecolor="#0e2b1f", edgecolor="#e6db74", linewidth=2.5)
             ax.add_patch(rect)
 
             # Copper Tracks

@@ -2,22 +2,31 @@ terminus/
 │
 ├── CORE/                               # Central Core Infrastructure
 │   ├── ipc_router.py                   # High-capacity async IPC router & multi-terminal networking (500+ sessions)
-│   ├── ascii_canvas.py                 # 2D Unicode canvas, paper-style circuit visualizer, Braille plotting & A* routing
+│   ├── ascii_canvas.py                 # 2D Unicode canvas, compact notation blocks ([ R1 10k ]), Braille plots & A* routing
+│   ├── interactive_canvas.py           # 2D Movable component blocks, orthogonal Manhattan pin routing, and selection
+│   ├── figure_renderer.py              # Universal 300 DPI vector PNG generator, technical report cards, and 24-bit Truecolor previewer
 │   ├── common_math.py                  # Engineering unit parsing, engineering notation, and scientific math helpers
-│   ├── storage_manager.py              # Central structured project storage (Documents/Terminus Files/) with custom extensions
+│   ├── storage_manager.py              # Central structured project storage (Documents/Terminus Files/) with authentic folder names
 │   ├── universal_exporter.py           # Industry standard exporters (SPICE .cir, Simulink .m, MATLAB .m, Verilog, VHDL, C, HEX)
-│   ├── figure_renderer.py              # Universal 300 DPI PNG generator & 24-bit Truecolor terminal graphic previewer
 │   └── lib_importer.py                 # Custom SPICE .lib/.mod and microcontroller hardware spec importer
 │
 ├── Engines/                            # Computational & Engineering Subsystem Engines
-│   ├── AnalogDevices_LTspice/ (Circuit)# Analog & Mixed-Signal Circuit Simulation Engine
+│   ├── Circuit/ (LTspice)              # Analog & Mixed-Signal Circuit Simulation Engine
 │   │   ├── components.py               # R, L, C, Diode, BJT, MOSFET, Op-Amp, Voltage/Current source models
 │   │   ├── catalog.py                  # Classified library with 50+ industrial SPICE models (1N4148, 2N3904, IRF540N, etc.)
 │   │   ├── netlist_parser.py           # SPICE netlist syntax parser and command translator
 │   │   ├── mna_solver.py               # Modified Nodal Analysis (MNA), DC OP, DC Sweep, AC Sweep, Transient, Fourier
 │   │   └── diagnostics.py              # Design Rule Checking (DRC) for floating nodes, shorted sources, missing ground
 │   │
-│   ├── MathWorks_Simulink/ (Dynamic_System) # Dynamic Systems, Control Systems & Block Diagram Engine
+│   ├── KiCad/                          # KiCad EDA Schematic, PCB Layout & Manufacturing Engine
+│   │   ├── schematic.py                # Schematic sheets, pin nets, compact symbol blocks, and ERC rules checker
+│   │   ├── footprints.py               # 500+ standard SMD (0201-2512) and THT footprints, pad geometries & dimensions
+│   │   ├── pcb_engine.py               # 2-layer PCB layout, component placement, orthogonal trace routing, vias, and DRC checker
+│   │   ├── calculator.py               # Engineering calculators (IPC-2152 track width, via parasitics, microstrip, 555, op-amp, filters)
+│   │   ├── gerber_exporter.py          # Complete RS-274X Gerber layer suite (F.Cu, B.Cu, SilkS, Mask, Paste, Edge) & Excellon drill files
+│   │   └── project_manager.py          # Single-folder project manager (.tkcad, .tsch, .tpcb, .tbom, gerbers)
+│   │
+│   ├── Dynamic_System/ (Simulink)      # Dynamic Systems, Control Systems & Block Diagram Engine
 │   │   ├── base.py                     # Base Block class, port descriptors, continuous & discrete state vectors
 │   │   ├── continuous.py               # Integrator, Derivative, State-Space, Transfer Function, Zero-Pole, Delay, PID 2DOF
 │   │   ├── discrete.py                 # Unit Delay, Discrete Filter, FIR/IIR, Discrete Integrator, Tapped Delay
@@ -38,27 +47,19 @@ terminus/
 │   │   ├── catalog.py                  # 17 classified block libraries with 100+ industrial control system blocks
 │   │   └── diagnostics.py              # Model Advisor diagnostics (algebraic loops, dangling ports, sample rates)
 │   │
-│   ├── MathWorks_MATLAB/ (Numerical)   # Numerical Math, DSP & Matrix Workbench Engine
+│   ├── Numerical/ (MATLAB)             # Numerical Math, DSP & Matrix Workbench Engine
 │   │   ├── parser.py                   # Vectorized Abstract Syntax Tree (AST) evaluator for MATLAB matrix math
 │   │   ├── matrix_ops.py               # NumPy linear algebra, eigenvalues, SVD, determinant, matrix rank
 │   │   ├── dsp_engine.py               # Digital Signal Processing, Butterworth/Chebyshev/FIR filters, FFT, PSD, Spectrogram
 │   │   ├── transforms.py               # Continuous & Discrete Transfer Functions, Laplace, Fourier, Z-plane, Bode plots
 │   │   └── matlab_manager.py           # MATLAB script manager (.tmat/.m) with external editor launching & execution
 │   │
-│   ├── AMD_Xilinx/ (Digital_Logic)     # Digital Logic Design & Hardware Description Engine
+│   ├── Digital_Logic/ (Xilinx)         # Digital Logic Design & Hardware Description Engine
 │   │   ├── gates.py                    # Combinational logic gates (AND, OR, NOT, XOR, NAND, NOR) & Flip-Flops (DFF, JK)
 │   │   ├── hdl_parser.py               # Logic circuit graph translator, boolean equations & truth table generator
 │   │   └── event_sim.py                # Discrete-event simulation, gate delays, clock edges, and ASCII timing diagrams
 │   │
-│   ├── KiCad/                          # KiCad EDA Schematic, PCB Layout & Manufacturing Engine
-│   │   ├── schematic.py                # Schematic sheets, pin nets, paper-style ASCII schematics, and ERC rules checker
-│   │   ├── footprints.py               # 500+ standard SMD (0201-2512) and THT footprints, pad geometries & dimensions
-│   │   ├── pcb_engine.py               # 2-layer PCB layout, component placement, A* trace routing, vias, and DRC checker
-│   │   ├── calculator.py               # Engineering calculators (IPC-2152 track width, via parasitics, microstrip, 555, op-amp, filters)
-│   │   ├── gerber_exporter.py          # Complete RS-274X Gerber layer suite (F.Cu, B.Cu, SilkS, Mask, Paste, Edge) & Excellon drill files
-│   │   └── project_manager.py          # Single-folder project manager (.tkcad, .tsch, .tpcb, .tbom, gerbers)
-│   │
-│   └── Embedded_IDE/ (Embedded)        # Real-Hardware Embedded IDE & Microcontroller Firmware Workbench
+│   └── Embedded/ (Arduino_IDE)         # Real-Hardware Embedded IDE & Microcontroller Firmware Workbench
 │       ├── boards.py                   # 30+ physical board specs (Arduino, ESP32, STM32, Raspberry Pi Pico, TI C2000, RISC-V)
 │       ├── usb_manager.py              # Hardware USB VID/PID scanner, COM port autodetection, and DTR/RTS reset pulsing
 │       ├── sketch_manager.py           # Embedded C/C++ project manager (.tembed/.ino) with templates & external editor sync
@@ -69,9 +70,10 @@ terminus/
 │       └── virtual_devices.py          # Virtual hardware breadboard (LEDs, RGB, Buttons, Pots, DHT22, Ultrasonic, Servo, LCD, OLED)
 │
 ├── UI/                                 # User Interface & Frontend Terminal Engine
+│   ├── split_workspace.py              # 60% Left / 40% Right + VS Code bottom history terminal layout renderer
 │   ├── app.py                          # Unified TerminusApp (Textual TUI) & decoupled TerminusEngineBridge CLI
 │   ├── screens.py                      # Multi-panel layouts for Circuit, Dynamic, Numerical, Digital, Embedded, KiCad
 │   └── widgets.py                      # Terminal plots, ASCII scopes, telemetry graphs, and block diagram inspectors
 │
 ├── Terminus.py                         # Master CLI REPL shell, script executor, and networking launcher
-└── tests/                              # Comprehensive unit & integration test suite (140+ automated tests)
+└── tests/                              # Comprehensive unit & integration test suite (148 automated tests passing)
