@@ -317,9 +317,13 @@ class CircuitParser:
                     pos_args.append(p)
 
             # Check if positional arguments include explicit nodes
-            # 2-terminal: R, C, L, V, I, D, B (if 3 positional args: node_p, node_n, value)
+            # 2-terminal: R, C, L, V, I, D, B (if 3 positional args: node_p, node_n, value OR value, node_p, node_n)
             if prefix in ("R", "C", "L", "V", "I", "D", "B") and len(pos_args) == 3:
-                node_p, node_n, val_or_type = pos_args[0], pos_args[1], pos_args[2]
+                try:
+                    parse_eng_unit(pos_args[0])
+                    val_or_type, node_p, node_n = pos_args[0], pos_args[1], pos_args[2]
+                except Exception:
+                    node_p, node_n, val_or_type = pos_args[0], pos_args[1], pos_args[2]
                 comp = cls._create_component_from_spec(name, val_or_type, kwargs)
                 comp.nodes = [node_p, node_n]
             # 3-terminal: Q, J (if 4 positional args: c, b, e, model)

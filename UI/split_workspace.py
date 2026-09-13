@@ -3,21 +3,27 @@
 Renders authentic engineering software interfaces:
 - 60% Left: Interactive movable 2D circuit canvas or live script/HDL code editor
 - 40% Right: Real-time technical graph dashboard, scopes, DRC/ERC cards, and BOM
-- Bottom Panel: Standard VS Code style integrated command history terminal
+- Bottom Panel: Streamlined single-line terminal history & status footer
 """
 
 from __future__ import annotations
 import os
 import shutil
+import re
 from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 
-from CORE.interactive_canvas import InteractiveSchematicCanvas, CanvasBlock
+from CORE.interactive_canvas import InteractiveSchematicCanvas, CanvasBlock, format_compact_val
 from CORE.figure_renderer import TechnicalReportMetrics
 
 
 class SplitWorkspaceRenderer:
-    """Combines 60% left canvas/editor, 40% right technical dashboard, and bottom terminal."""
+    """Combines 60% left canvas/editor, 40% right technical dashboard, and bottom status."""
+
+    @classmethod
+    def _strip_markup(cls, text: str) -> str:
+        """Removes rich/textual [bold], [cyan] markup tags for character width measurements."""
+        return re.sub(r'\[/?[a-zA-Z0-9_#\s,-]+\]', '', text)
 
     @classmethod
     def render_workspace_screen(
@@ -30,18 +36,25 @@ class SplitWorkspaceRenderer:
         right_metrics_card: str,
         history_logs: List[str],
         status_message: str = "",
-        total_width: Optional[int] = None
+        total_width: Optional[int] = None,
+        total_height: Optional[int] = None
     ) -> str:
         """Renders the full framed split-screen view formatted for terminal consoles."""
-        # Determine terminal width (default 120 cols if not detected)
-        term_cols = total_width or shutil.get_terminal_size(fallback=(120, 36)).columns
-        term_cols = max(90, term_cols)
+        # Detect terminal size safely and stretch to full width
+        raw_size = shutil.get_terminal_size(fallback=(105, 30))
+        raw_cols = total_width or raw_size.columns
+        raw_rows = total_height or raw_size.lines
 
-        # 60% Left, 40% Right width allocation (accounting for vertical divider)
-        left_w = int(term_cols * 0.58)
-        right_w = term_cols - left_w - 3  # 3 chars for divider " │ "
+        term_cols = max(80, raw_cols - 1)
+        term_rows = max(18, raw_rows - 3)
 
-        # 1. Authentic Mode Title & Window Border Header
+        # Total line inner width = term_cols - 2 (outer ║ ... ║)
+        # Format: "║ " (2) + left_w + " │ " (3) + right_w + " ║" (2) = left_w + right_w + 7 = term_cols
+        available = term_cols - 7
+        left_w = int(available * 0.58)
+        right_w = available - left_w
+
+        # 1. Mode Titles
         mode_titles = {
             "CIRCUIT": "LTspice IV/XVII Schematic & Waveform Studio",
             "LTSPICE": "LTspice IV/XVII Schematic & Waveform Studio",
@@ -60,60 +73,52 @@ class SplitWorkspaceRenderer:
         sid_badge = f" [Session #{session_id}]" if session_id else ""
         proj_badge = f" [{project_name}]" if project_name else ""
 
-        header_text = f"╔═══ [ {title_str}{proj_badge}{sid_badge} ] "
-        header_text += "═" * max(0, term_cols - len(header_text) - 1) + "╗"
+        header_prefix = f"╔═══ [ {title_str}{proj_badge}{sid_badge} ] "
+        header_text = header_prefix + ("═" * max(0, term_cols - len(header_prefix) - 1)) + "╗"
+        lines = [f"[bold cyan]{header_text[:term_cols]}[/bold cyan]"]
 
-        lines = [f"[bold cyan]{header_text}[/bold cyan]"]
-
-        # 2. Format Left and Right Lines
-        left_lines = left_content.splitlines()
+        # 2. Left and Right column lines
+        left_lines = [l for l in left_content.splitlines()]
         right_lines = []
-
         if right_graph_content:
             right_lines.extend(right_graph_content.splitlines())
         if right_metrics_card:
-            if right_lines: right_lines.append("──────────────────────────────────────────")
+            if right_lines:
+                right_lines.append("─" * right_w)
             right_lines.extend(right_metrics_card.splitlines())
 
-        # Pad height so both columns align
-        max_rows = max(len(left_lines), len(right_lines), 16)
+        # Match row count dynamically to available terminal height (giving maximum space to canvas)
+        canvas_h = max(16, term_rows - 4)
+        max_rows = max(len(left_lines), len(right_lines), canvas_h)
         while len(left_lines) < max_rows:
-            left_lines.append(" " * left_w)
+            left_lines.append("")
         while len(right_lines) < max_rows:
-            right_lines.append(" " * right_w)
+            right_lines.append("")
 
-        # Truncate / Pad each line to fixed column widths
         for i in range(max_rows):
-            l_str = left_lines[i]
-            r_str = right_lines[i]
+            l_raw = left_lines[i]
+            r_raw = right_lines[i]
 
-            # Strip markup length for proper column formatting
-            l_clean = cls._strip_markup(l_str)
-            r_clean = cls._strip_markup(r_str)
+            l_clean = cls._strip_markup(l_raw)[:left_w]
+            r_clean = cls._strip_markup(r_raw)[:right_w]
 
-            l_padded = l_str + (" " * max(0, left_w - len(l_clean)))
-            r_padded = r_str + (" " * max(0, right_w - len(r_clean)))
+            l_padded = l_clean.ljust(left_w)
+            r_padded = r_clean.ljust(right_w)
 
-            lines.append(f"║ {l_padded[:left_w]} [bold cyan]│[/bold cyan] {r_padded[:right_w]} ║")
+            lines.append(f"║ {l_padded} [bold cyan]│[/bold cyan] {r_padded} ║")
 
-        # 3. Horizontal Split Separator for VS Code Style Bottom Terminal
-        mid_sep = f"╠═══ [ VS Code Terminal History & Output Log ] "
-        mid_sep += "═" * max(0, term_cols - len(mid_sep) - 1) + "╣"
-        lines.append(f"[bold cyan]{mid_sep}[/bold cyan]")
+        # 3. Streamlined 1-Line Terminal Log Separator
+        last_log = history_logs[-1] if history_logs else "> Ready for engineering commands. Type 'help' for manual."
+        last_log_clean = cls._strip_markup(last_log)[:max(10, term_cols - 22)]
+        mid_prefix = f"╠═══ [ Terminal Log: {last_log_clean} ] "
+        mid_sep = mid_prefix + ("═" * max(0, term_cols - len(mid_prefix) - 1)) + "╣"
+        lines.append(f"[bold cyan]{mid_sep[:term_cols]}[/bold cyan]")
 
-        # 4. Render Bottom History (Last 5-6 commands / outputs)
-        recent_history = history_logs[-6:] if history_logs else ["[dim]No commands executed yet. Type 'help' for command manual.[/dim]"]
-        for h_line in recent_history:
-            for sub_h in h_line.splitlines()[:2]:  # Keep compact
-                clean_h = cls._strip_markup(sub_h)
-                padded_h = sub_h + (" " * max(0, term_cols - len(clean_h) - 4))
-                lines.append(f"║ {padded_h[:term_cols - 4]} ║")
-
-        # 5. Status / Message Line & Bottom Border
+        # 4. Streamlined Footer & Status Bar
         status_bar = f" Status: {status_message}" if status_message else f" Ready. Operating Mode: {mode.upper()}"
-        footer_text = f"╚═══ [{status_bar} ] "
-        footer_text += "═" * max(0, term_cols - len(footer_text) - 1) + "╝"
-        lines.append(f"[bold cyan]{footer_text}[/bold cyan]")
+        footer_prefix = f"╚═══ [{status_bar} ] "
+        footer_text = footer_prefix + ("═" * max(0, term_cols - len(footer_prefix) - 1)) + "╝"
+        lines.append(f"[bold cyan]{footer_text[:term_cols]}[/bold cyan]")
 
         return "\n".join(lines)
 
@@ -124,6 +129,15 @@ class SplitWorkspaceRenderer:
         session_id = getattr(bridge.ipc_client, "session_id", None) if hasattr(bridge, "ipc_client") else None
         history = getattr(bridge, "cmd_history", [])
 
+        # Terminal sizing
+        raw_size = shutil.get_terminal_size(fallback=(105, 30))
+        term_cols = max(80, raw_size.columns - 1)
+        term_rows = max(18, raw_size.lines - 3)
+        available = term_cols - 7
+        left_w = int(available * 0.58)
+        right_w = available - left_w
+        canvas_h = max(16, term_rows - 4)
+
         left_content = ""
         right_graph_content = ""
         right_metrics_card = ""
@@ -131,16 +145,59 @@ class SplitWorkspaceRenderer:
 
         if mode in ("CIRCUIT", "LTSPICE"):
             proj_name = bridge.circuit_netlist.name or "LTspiceLab"
-            # Populate 2D interactive canvas from netlist
-            bridge.canvas.clear()
-            for cname, comp in bridge.circuit_netlist.components.items():
-                val = getattr(comp, "value", getattr(comp, "dc", ""))
-                val_s = f"{val}" if val else ""
-                c_type = type(comp).__name__[:1]
-                label = f"[ {c_type} {cname}:{val_s} ]" if val_s else f"[ {cname} ]"
-                bridge.canvas.add_or_update_block(cname, label)
+            bridge.canvas.width = left_w
+            bridge.canvas.height = canvas_h
 
-            # Add wires for shared nodes
+            # Check if user already moved blocks or if we should auto-layout
+            existing_refs = set(bridge.canvas.blocks.keys())
+            current_refs = set(k.upper() for k in bridge.circuit_netlist.components.keys())
+
+            if existing_refs != current_refs:
+                bridge.canvas.clear()
+                # Intelligent topological auto-layout
+                # 1. Sources on left, passives in middle, shunts towards ground
+                c_items = list(bridge.circuit_netlist.components.items())
+                for idx, (cname, comp) in enumerate(c_items):
+                    val = getattr(comp, "value", getattr(comp, "dc", ""))
+                    val_s = format_compact_val(val)
+                    c_type = type(comp).__name__[:1]
+                    label = f"{c_type} {cname}:{val_s}" if val_s else f"{cname}"
+
+                    # Determine placement by component role
+                    nodes = getattr(comp, "nodes", [])
+                    is_shunt = len(nodes) >= 2 and ("0" in nodes or "gnd" in [n.lower() for n in nodes])
+                    if cname.upper().startswith("V") or cname.upper().startswith("I"):
+                        # Input source
+                        bx = 2
+                        by = 3
+                    elif is_shunt and not cname.upper().startswith("V"):
+                        # Shunt capacitor / load resistor
+                        bx = max(2, min(left_w - 14, 18 + (idx - 1) * 16))
+                        by = 9
+                    else:
+                        # Series resistor / inductor
+                        bx = max(2, min(left_w - 14, 2 + idx * 16))
+                        by = 3
+
+                    blk = bridge.canvas.add_or_update_block(cname, f"[ {label} ]", x=bx, y=by)
+            else:
+                # Update labels with latest values and probe overlays
+                for cname, comp in bridge.circuit_netlist.components.items():
+                    val = getattr(comp, "value", getattr(comp, "dc", ""))
+                    val_s = format_compact_val(val)
+                    c_type = type(comp).__name__[:1]
+                    label = f"{c_type} {cname}:{val_s}" if val_s else f"{cname}"
+                    bridge.canvas.add_or_update_block(cname, f"[ {label} ]")
+
+            # Attach probed voltages/currents if simulation results exist
+            if bridge.last_circuit_sim:
+                for cname, blk in bridge.canvas.blocks.items():
+                    v_key = f"V({cname})"
+                    if v_key in bridge.last_circuit_sim.op_results:
+                        blk.probed_v = bridge.last_circuit_sim.op_results[v_key]
+
+            # Add wires for shared nets
+            bridge.canvas.wires.clear()
             net_nodes: Dict[str, List[str]] = {}
             for cname, comp in bridge.circuit_netlist.components.items():
                 for i, node in enumerate(getattr(comp, "nodes", [])):
@@ -152,18 +209,21 @@ class SplitWorkspaceRenderer:
                     b2, p2 = eps[i+1].split(".")
                     bridge.canvas.add_wire(b1, p1, b2, p2, net_name=node)
 
-            left_content = bridge.canvas.render(f"LTspice Schematic ({len(bridge.circuit_netlist.components)} parts)")
+            grid_lines = bridge.canvas.render_grid_lines(width=left_w, height=canvas_h)
+            left_content = "\n".join(grid_lines)
 
             # Right graph & metrics
             if bridge.last_circuit_sim and bridge.last_circuit_sim.waveforms:
                 out_wf = next((wf for k, wf in bridge.last_circuit_sim.waveforms.items() if not k.startswith("I(")), None)
                 if out_wf:
                     from CORE.ascii_canvas import AsciiPlotter
-                    right_graph_content = AsciiPlotter.plot(out_wf.x, out_wf.y, width=38, height=8, title=f"Scope: {out_wf.name}", annotate=False)
+                    right_graph_content = AsciiPlotter.plot(out_wf.x, out_wf.y, width=right_w - 2, height=max(7, canvas_h - 7), title=f"Scope: {out_wf.name}", annotate=False)
                     m = TechnicalReportMetrics.compute_from_waveform(out_wf.x, out_wf.y, mode="LTspice", project=proj_name)
-                    right_metrics_card = f"[bold green]── Technical Metrics ──[/bold green]\n{m.to_summary_line()}"
+                    right_metrics_card = f"── Technical Metrics ──\n{m.to_summary_line()}"
             else:
-                right_graph_content = "[bold cyan]── LTspice DRC & Netlist ──[/bold cyan]\n" + "\n".join(f"  • {k}: {getattr(c, 'value', '')} nodes {getattr(c, 'nodes', [])}" for k, c in list(bridge.circuit_netlist.components.items())[:6])
+                comp_list = [f" • {k}: {format_compact_val(getattr(c, 'value', ''))} nodes {getattr(c, 'nodes', [])}" for k, c in list(bridge.circuit_netlist.components.items())[:8]]
+                right_graph_content = "── LTspice DRC & Netlist ──\n" + ("\n".join(comp_list) if comp_list else " Netlist empty. Run 'add R1 10k in out'")
+                right_metrics_card = f"── Circuit Status ──\n Components: {len(bridge.circuit_netlist.components)} | Ground: {'0' if '0' in bridge.circuit_netlist.node_aliases else 'Missing'}"
 
         elif mode in ("KICAD", "PCB"):
             proj_name = bridge.kicad_proj.name or "KiCadProject"
@@ -171,66 +231,84 @@ class SplitWorkspaceRenderer:
             left_content = SchematicVisualizer.render_pcb_board(
                 bridge.kicad_proj.pcb.width_mm, bridge.kicad_proj.pcb.height_mm,
                 bridge.kicad_proj.pcb.components, bridge.kicad_proj.pcb.tracks, bridge.kicad_proj.pcb.vias,
-                grid_cols=46, grid_rows=14
+                grid_cols=left_w - 4, grid_rows=canvas_h - 2
             )
             drc_reports = bridge.kicad_proj.pcb.run_drc()
             is_valid = drc_reports.get("is_valid", True) if isinstance(drc_reports, dict) else (not drc_reports)
             issue_cnt = len(drc_reports.get("issues", [])) if isinstance(drc_reports, dict) else len(drc_reports)
-            drc_str = f"DRC Status: {'[bold green]PASSED[/bold green]' if is_valid else f'[bold red]{issue_cnt} Issues[/bold red]'}"
-            right_graph_content = f"[bold cyan]── KiCad PCB Status ──[/bold cyan]\n  * Board Size: {bridge.kicad_proj.pcb.width_mm:.0f}x{bridge.kicad_proj.pcb.height_mm:.0f} mm\n  * {drc_str}\n  * Layers: Top F.Cu (Red), Bot B.Cu (Blue)"
-            right_metrics_card = f"[bold green]── BOM Component Count ──[/bold green]\n  * Components: {len(bridge.kicad_proj.pcb.components)}\n  * Copper Tracks: {len(bridge.kicad_proj.pcb.tracks)}\n  * Vias: {len(bridge.kicad_proj.pcb.vias)}"
+            drc_str = f"DRC Status: {'PASSED' if is_valid else f'{issue_cnt} Violations'}"
+            right_graph_content = f"── KiCad PCB Status ──\n * Board: {bridge.kicad_proj.pcb.width_mm:.0f}x{bridge.kicad_proj.pcb.height_mm:.0f} mm\n * {drc_str}\n * Layers: F.Cu (Red), B.Cu (Blue)"
+            right_metrics_card = f"── BOM Component Count ──\n * Components: {len(bridge.kicad_proj.pcb.components)}\n * Tracks: {len(bridge.kicad_proj.pcb.tracks)} | Vias: {len(bridge.kicad_proj.pcb.vias)}"
 
         elif mode in ("NUMERICAL", "MATLAB"):
             proj_name = bridge.matlab_proj.project_name or "MATLAB_Workspace"
-            left_content = bridge.matlab_proj.view_code()
+            code_lines = bridge.matlab_proj.view_code().splitlines()
+            left_content = "\n".join(code_lines[:canvas_h])
             if any(sp.traces for sp in bridge.figure.subplots.values()):
                 sp = bridge.figure.subplots[0]
                 if sp.traces:
                     from CORE.ascii_canvas import AsciiPlotter
                     tr = sp.traces[0]
-                    right_graph_content = AsciiPlotter.plot(tr.x, tr.y, width=38, height=8, title=f"Plot: {tr.label}", annotate=False)
+                    right_graph_content = AsciiPlotter.plot(tr.x, tr.y, width=right_w - 2, height=max(7, canvas_h - 7), title=f"Plot: {tr.label}", annotate=False)
             else:
                 var_list = []
                 for vk, vv in list(bridge.numerical_workspace.variables.items())[:8]:
                     if vk not in ("pi", "e", "j", "i"):
-                        shape_str = f"{len(vv)} elements" if isinstance(vv, (list, np.ndarray)) else f"{vv}"
-                        var_list.append(f"  • {vk:10s} : {shape_str}")
-                right_graph_content = "[bold cyan]── Workspace Variables (whos) ──[/bold cyan]\n" + ("\n".join(var_list) if var_list else "  (Workspace empty)")
+                        shape_str = f"{len(vv)} elem" if isinstance(vv, (list, np.ndarray)) else f"{vv}"
+                        var_list.append(f" • {vk:8s} : {shape_str}")
+                right_graph_content = "── Workspace Variables (whos) ──\n" + ("\n".join(var_list) if var_list else " (Workspace empty)")
             if bridge.figure.metrics:
-                right_metrics_card = f"[bold green]── Signal Metrics ──[/bold green]\n{bridge.figure.metrics.to_summary_line()}"
+                right_metrics_card = f"── Signal Metrics ──\n{bridge.figure.metrics.to_summary_line()}"
 
         elif mode in ("DYNAMIC", "SIMULINK"):
             proj_name = bridge.dynamic_diagram.name or "SimulinkModel"
-            bridge.canvas.clear()
-            for bname, block in bridge.dynamic_diagram.blocks.items():
-                btype = type(block).__name__.replace("Block", "")[:4]
-                bridge.canvas.add_or_update_block(bname, f"[ {bname} {btype} ]")
+            bridge.canvas.width = left_w
+            bridge.canvas.height = canvas_h
+
+            existing_blocks = set(bridge.canvas.blocks.keys())
+            current_blocks = set(k.upper() for k in bridge.dynamic_diagram.blocks.keys())
+            if existing_blocks != current_blocks:
+                bridge.canvas.clear()
+                for idx, (bname, block) in enumerate(bridge.dynamic_diagram.blocks.items()):
+                    btype = type(block).__name__.replace("Block", "")[:4]
+                    bx = max(2, min(left_w - 14, 2 + (idx % 3) * 18))
+                    by = max(2, min(canvas_h - 4, 3 + (idx // 3) * 6))
+                    bridge.canvas.add_or_update_block(bname, f"[ {bname} {btype} ]", x=bx, y=by)
+            else:
+                for bname, block in bridge.dynamic_diagram.blocks.items():
+                    btype = type(block).__name__.replace("Block", "")[:4]
+                    bridge.canvas.add_or_update_block(bname, f"[ {bname} {btype} ]")
+
+            bridge.canvas.wires.clear()
             for (src_b, src_p), (dst_b, dst_p) in bridge.dynamic_diagram.connections:
                 bridge.canvas.add_wire(src_b, str(src_p), dst_b, str(dst_p))
-            left_content = bridge.canvas.render(f"Simulink Model ({len(bridge.dynamic_diagram.blocks)} blocks)")
+
+            grid_lines = bridge.canvas.render_grid_lines(width=left_w, height=canvas_h)
+            left_content = "\n".join(grid_lines)
+
             if bridge.last_dynamic_sim:
                 first_wf = next(iter(bridge.last_dynamic_sim.values()), None)
                 if first_wf:
                     from CORE.ascii_canvas import AsciiPlotter
-                    right_graph_content = AsciiPlotter.plot(first_wf.x, first_wf.y, width=38, height=8, title=f"Scope: {first_wf.name}", annotate=False)
+                    right_graph_content = AsciiPlotter.plot(first_wf.x, first_wf.y, width=right_w - 2, height=max(7, canvas_h - 7), title=f"Scope: {first_wf.name}", annotate=False)
             else:
-                right_graph_content = f"[bold cyan]── Dynamic System Config ──[/bold cyan]\n  * Solver: {bridge.dynamic_diagram.solver.upper()}\n  * dt: {bridge.dynamic_diagram.dt}s | Stop: {bridge.dynamic_diagram.t_stop}s"
-            right_metrics_card = f"[bold green]── Model States ──[/bold green]\n  * Blocks: {len(bridge.dynamic_diagram.blocks)}\n  * Signals: {len(bridge.dynamic_diagram.connections)}"
+                right_graph_content = f"── Dynamic System Config ──\n * Solver: {bridge.dynamic_diagram.solver.upper()}\n * dt: {bridge.dynamic_diagram.dt}s | Stop: {bridge.dynamic_diagram.t_stop}s"
+            right_metrics_card = f"── Model States ──\n * Blocks: {len(bridge.dynamic_diagram.blocks)}\n * Signals: {len(bridge.dynamic_diagram.connections)}"
 
         elif mode in ("DIGITAL", "XILINX"):
             proj_name = bridge.logic_circuit.name or "XilinxVivado"
             left_content = f"// Xilinx Vivado HDL Module: {proj_name}\nmodule {proj_name} (\n  input clk, reset,\n  output [7:0] data_out\n);\n  // Gates: {len(bridge.logic_circuit.gates)}\n  // Wires: {len(bridge.logic_circuit.wires)}\nendmodule"
-            right_graph_content = f"[bold cyan]── Logic Timing Diagram ──[/bold cyan]\n" + (bridge.logic_circuit.render_timing_diagram(width=36) if hasattr(bridge.logic_circuit, 'render_timing_diagram') else "No logic simulation run. Use 'sim 100ns'")
-            right_metrics_card = f"[bold green]── FPGA Resource Utilization ──[/bold green]\n  * LUTs: {len(bridge.logic_circuit.gates)}\n  * Flip-Flops: 8\n  * Max Clock: 250.0 MHz"
+            right_graph_content = "── Logic Timing Diagram ──\n" + (bridge.logic_circuit.render_timing_diagram(width=right_w - 4) if hasattr(bridge.logic_circuit, 'render_timing_diagram') else "No logic simulation run. Run 'sim 100ns'")
+            right_metrics_card = f"── FPGA Resource Utilization ──\n * LUTs: {len(bridge.logic_circuit.gates)}\n * Flip-Flops: 8\n * Max Clock: 250.0 MHz"
 
         elif mode in ("EMBEDDED", "ARDUINO_IDE"):
             proj_name = bridge.sketch_proj.project_name or "ArduinoProject"
-            left_content = bridge.sketch_proj.view_code()
+            left_content = "\n".join(bridge.sketch_proj.view_code().splitlines()[:canvas_h])
             if bridge.ascii_plotter.channels:
                 right_graph_content = bridge.ascii_plotter.render_graph()
             else:
-                right_graph_content = f"[bold cyan]── Arduino Telemetry Monitor ──[/bold cyan]\n  * Port: {bridge.active_com_port}\n  * Baud: 115200\n  * Target: {bridge.target_board.name if bridge.target_board else 'UNO'}"
-            right_metrics_card = f"[bold green]── MCU Memory Metrics ──[/bold green]\n  * Flash: 2.1 KB / 32 KB (6%)\n  * SRAM: 184 B / 2048 B (8%)"
+                right_graph_content = f"── Arduino Telemetry Monitor ──\n * Port: {bridge.active_com_port}\n * Baud: 115200\n * Target: {bridge.target_board.name if bridge.target_board else 'UNO'}"
+            right_metrics_card = "── MCU Memory Metrics ──\n * Flash: 2.1 KB / 32 KB (6%)\n * SRAM: 184 B / 2048 B (8%)"
 
         return cls.render_workspace_screen(
             mode=mode,
@@ -240,12 +318,8 @@ class SplitWorkspaceRenderer:
             right_graph_content=right_graph_content,
             right_metrics_card=right_metrics_card,
             history_logs=history,
-            status_message=status_message
+            status_message=status_message,
+            total_width=term_cols,
+            total_height=term_rows
         )
-
-    @classmethod
-    def _strip_markup(cls, text: str) -> str:
-        """Removes rich/textual [bold], [cyan] markup tags for character width measurements."""
-        import re
-        return re.sub(r'\[/?[a-zA-Z0-9_#\s,]+\]', '', text)
 

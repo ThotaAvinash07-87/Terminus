@@ -8,6 +8,7 @@ import argparse
 import sys
 import os
 import socket
+import re
 
 if hasattr(sys.stdout, "reconfigure"):
     try:
@@ -49,19 +50,69 @@ def run_cli_commands(commands: str, mode: str = "CIRCUIT", session_id: int = Non
             print(f"Error executing '{line}': {e}", file=sys.stderr)
 
 
+import shutil
+
+def prompt_welcome_mode_selection() -> str:
+    """Renders authentic Terminus welcome hub and prompts user for their starting engineering mode."""
+    os.system("cls" if os.name == "nt" else "clear")
+    raw_size = shutil.get_terminal_size(fallback=(105, 30))
+    w = max(80, raw_size.columns - 1)
+
+    title_box = [
+        "╔" + "═" * (w - 2) + "╗",
+        "║" + "  ████████╗███████╗██████╗ ███╗   ███╗██╗███╗   ██╗██╗   ██╗███████╗  ECE Engineering Studio v1.0".ljust(w - 2) + "║",
+        "║" + "  ╚══██╔══╝██╔════╝██╔══██╗████╗ ████║██║████╗  ██║██║   ██║██╔════╝  Fixed Interactive Workspace".ljust(w - 2) + "║",
+        "║" + "     ██║   █████╗  ██████╔╝██╔████╔██║██║██╔██╗ ██║██║   ██║███████╗  High-Capacity Session Engine".ljust(w - 2) + "║",
+        "║" + "     ██║   ██╔══╝  ██╔══██╗██║╚██╔╝██║██║██║╚██╗██║██║   ██║╚════██║  [Ready for 500+ Connections]".ljust(w - 2) + "║",
+        "║" + "     ██║   ███████╗██║  ██║██║ ╚═╝ ██║██║██║ ╚████║╚██████╔╝███████║".ljust(w - 2) + "║",
+        "║" + "     ╚═╝   ╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚══════╝".ljust(w - 2) + "║",
+        "╠" + "═" * (w - 2) + "╣",
+        "║" + "  Welcome to Terminus! Select an Engineering Subsystem Mode to Launch:".ljust(w - 2) + "║",
+        "║" + " ".ljust(w - 2) + "║",
+        "║" + "    [1] CIRCUIT   (LTspice)     - LTspice IV/XVII Schematic & Waveform Studio".ljust(w - 2) + "║",
+        "║" + "    [2] KICAD     (PCB / EDA)   - KiCad 8.0/10.0 PCB & Schematic Layout Studio".ljust(w - 2) + "║",
+        "║" + "    [3] DYNAMIC   (Simulink)    - Simulink Multi-Domain Dynamic Modeling Engine".ljust(w - 2) + "║",
+        "║" + "    [4] NUMERICAL (MATLAB / DSP)- MATLAB Signal Processing & Script Workspace".ljust(w - 2) + "║",
+        "║" + "    [5] DIGITAL   (Xilinx)      - Xilinx Vivado HDL Logic & Timing Simulator".ljust(w - 2) + "║",
+        "║" + "    [6] EMBEDDED  (Arduino IDE) - Arduino IDE Firmware Studio & Real Serial Telemetry".ljust(w - 2) + "║",
+        "║" + " ".ljust(w - 2) + "║",
+        "║" + "  Tip: You can switch modes anytime inside the workspace by entering 'mode <name>'.".ljust(w - 2) + "║",
+        "╚" + "═" * (w - 2) + "╝",
+    ]
+    console.print("\n".join(f"[bold cyan]{l}[/bold cyan]" for l in title_box))
+
+    try:
+        choice = input("\nSelect Subsystem Mode [1-6 or name] (default: 1 - Circuit): ").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        print("\nExiting.")
+        sys.exit(0)
+
+    mode_map = {
+        "1": "CIRCUIT", "circuit": "CIRCUIT", "ltspice": "CIRCUIT", "spice": "CIRCUIT",
+        "2": "KICAD", "kicad": "KICAD", "pcb": "KICAD", "eda": "KICAD",
+        "3": "DYNAMIC", "dynamic": "DYNAMIC", "simulink": "DYNAMIC",
+        "4": "NUMERICAL", "numerical": "NUMERICAL", "matlab": "NUMERICAL", "dsp": "NUMERICAL",
+        "5": "DIGITAL", "digital": "DIGITAL", "xilinx": "DIGITAL", "verilog": "DIGITAL",
+        "6": "EMBEDDED", "embedded": "EMBEDDED", "arduino": "EMBEDDED", "arduino_ide": "EMBEDDED",
+    }
+    return mode_map.get(choice, "CIRCUIT")
+
+
 def run_cli_repl(
-    initial_mode: str = "CIRCUIT",
+    initial_mode: str = None,
     session_id: int = None,
     connect_addr: str = None,
     auto_server: bool = False
 ) -> None:
-    """Interactive Command-by-Command CLI REPL Shell in standard terminal."""
+    """Interactive Command-by-Command In-Place Workspace Shell in standard terminal."""
+    if not initial_mode:
+        initial_mode = prompt_welcome_mode_selection()
+
     bridge = TerminusEngineBridge()
-    if initial_mode:
-        try:
-            bridge.switch_mode(initial_mode)
-        except Exception:
-            pass
+    try:
+        bridge.switch_mode(initial_mode)
+    except Exception:
+        bridge.switch_mode("CIRCUIT")
 
     if auto_server:
         bridge.execute_command("session server start")
@@ -69,7 +120,7 @@ def run_cli_repl(
         try:
             bridge.execute_command(f"session connect {connect_addr} {session_id or ''}")
         except Exception as e:
-            console.print(f"[yellow]Warning: Could not auto-connect to router {connect_addr}: {e}[/yellow]")
+            pass
     else:
         # Attempt auto-connection to local router if running
         try:
@@ -78,34 +129,59 @@ def run_cli_repl(
         except Exception:
             pass
 
-    console.print("[bold green]=== TerminusECE Interactive Command Line Shell ===[/bold green]")
-    session_badge = f" [bold magenta][Session #{bridge.ipc_client.session_id}][/bold magenta]" if bridge.ipc_client.is_connected else ""
-    console.print(f"Unified EDA command workspace.{session_badge} Type [bold cyan]'help'[/bold cyan] for commands, [bold cyan]'exit'[/bold cyan] to exit.")
-    console.print("Quick Start: 'mode circuit' (LTspice), 'mode dynamic' (Simulink), 'mode kicad' (KiCad EDA), 'mode numerical' (MATLAB), 'mode digital' (Xilinx), 'mode embedded' (Arduino).\n")
+    status_msg = f"Ready. Operating Mode: {bridge.mode}"
 
     while True:
         try:
+            # Clear terminal screen and redraw the full fixed interactive workspace in-place
+            os.system("cls" if os.name == "nt" else "clear")
+            workspace_art = bridge.render_split_workspace(status_msg)
+            strip_or_render_markup(workspace_art)
+
             sid_prompt = f"#{bridge.ipc_client.session_id} " if bridge.ipc_client.is_connected else ""
             prompt_str = f"Terminus [{bridge.mode}] {sid_prompt}> "
             line = input(prompt_str).strip()
+
             if not line:
                 continue
-            if line.lower() in ("exit", "quit", "q"):
-                console.print("[yellow]Exiting TerminusECE CLI. Goodbye![/yellow]")
-                break
-            if line.lower() == "clear" and bridge.mode not in ("DYNAMIC", "CIRCUIT", "KICAD"):
-                os.system("cls" if os.name == "nt" else "clear")
-                continue
 
+            # Check exit
+            if line.lower() in ("exit", "quit", "q"):
+                if bridge.has_unsaved_work():
+                    save_ans = input(f"\nSave current {bridge.mode} workspace before exiting? (y/n): ").strip().lower()
+                    if save_ans in ("y", "yes"):
+                        save_out = bridge.execute_command("file save")
+                        print(save_out)
+                print("\nExiting TerminusECE CLI. Goodbye!")
+                break
+
+            # Check mode switch
+            tokens = line.split()
+            if tokens[0].lower() == "mode" and len(tokens) > 1:
+                target_mode = tokens[1].upper()
+                if bridge.has_unsaved_work():
+                    save_ans = input(f"\nSave current {bridge.mode} workspace before switching to {target_mode}? (y/n): ").strip().lower()
+                    if save_ans in ("y", "yes"):
+                        save_out = bridge.execute_command("file save")
+                        status_msg = f"Saved {bridge.mode} workspace. "
+                try:
+                    new_m = bridge.switch_mode(tokens[1])
+                    status_msg = f"Switched context to {new_m} Studio"
+                    continue
+                except Exception as e:
+                    status_msg = f"Error switching mode: {e}"
+                    continue
+
+            # Execute command
             res = bridge.execute_command(line)
-            if res:
-                strip_or_render_markup(res)
-                print()  # Empty line separator
+            first_l = res.splitlines()[0] if res else "OK"
+            status_msg = cls_first_l = re.sub(r'\[/?[a-zA-Z0-9_#\s,-]+\]', '', first_l)
+
         except (KeyboardInterrupt, EOFError):
-            console.print("\n[yellow]Session interrupted. Exiting.[/yellow]")
+            print("\nSession interrupted. Exiting.")
             break
         except Exception as err:
-            console.print(f"[bold red]Error:[/bold red] {err}\n")
+            status_msg = f"Error: {err}"
 
 
 def run_script_file(file_path: str, mode: str = "CIRCUIT") -> None:
@@ -124,7 +200,7 @@ def main() -> None:
     parser.add_argument(
         "--mode", "-m",
         type=str,
-        default="CIRCUIT",
+        default=None,
         help="Initial subsystem mode (circuit, dynamic, numerical, digital, embedded, kicad)"
     )
     parser.add_argument(

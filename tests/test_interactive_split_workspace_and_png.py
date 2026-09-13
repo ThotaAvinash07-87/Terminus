@@ -60,13 +60,13 @@ class TestInteractiveSplitWorkspaceAndPNG(unittest.TestCase):
         self.assertTrue(sel.selected)
 
     def test_split_workspace_rendering_across_all_modes(self):
-        """Validates 60% Left / 40% Right + VS Code bottom history terminal layout in all 6 modes."""
+        """Validates 60% Left / 40% Right + streamlined terminal log layout in all 6 modes."""
         modes = ["CIRCUIT", "NUMERICAL", "DYNAMIC", "DIGITAL", "EMBEDDED", "KICAD"]
         for m in modes:
             self.bridge.switch_mode(m)
             ws_view = self.bridge.render_split_workspace(f"Testing Mode {m}")
-            # Verify outer framing
-            self.assertIn("VS Code Terminal History & Output Log", ws_view)
+            # Verify outer framing and streamlined terminal log
+            self.assertIn("Terminal Log:", ws_view)
             self.assertIn("Testing Mode", ws_view)
 
     def test_matlab_numerical_code_buffer_and_split_screen(self):

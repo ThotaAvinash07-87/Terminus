@@ -190,6 +190,22 @@ class TerminusEngineBridge:
             raise ValueError(f"Unknown mode '{mode_str}'. Valid modes: circuit, numerical, dynamic, digital, embedded, kicad, unified")
         return self.mode
 
+    def has_unsaved_work(self) -> bool:
+        """Checks if current mode has active unsaved components or variables."""
+        if self.mode in ("CIRCUIT", "LTSPICE"):
+            return len(self.circuit_netlist.components) > 0
+        elif self.mode in ("KICAD", "PCB"):
+            return len(self.kicad_proj.schematic.components) > 0 or len(self.kicad_proj.pcb.components) > 0
+        elif self.mode in ("DYNAMIC", "SIMULINK"):
+            return len(self.dynamic_diagram.blocks) > 0
+        elif self.mode in ("NUMERICAL", "MATLAB"):
+            return len([k for k in self.numerical_workspace.variables if k not in ("pi", "e", "j", "i")]) > 0
+        elif self.mode in ("DIGITAL", "XILINX"):
+            return len(self.logic_circuit.gates) > 0
+        elif self.mode in ("EMBEDDED", "ARDUINO_IDE"):
+            return len(self.sketch_proj.sketch_code.strip()) > 0
+        return False
+
     def execute_command(self, raw_command: str) -> str:
         """Executes a text command line and returns formatted output string."""
         line = raw_command.strip()
@@ -221,18 +237,51 @@ class TerminusEngineBridge:
         if first in ("screen", "workspace", "view", "split", "gui", "refresh"):
             return self.render_split_workspace()
 
-        # Canvas Interactive Positioning Commands
-        if first in ("move", "pos", "relocate") and len(tokens) >= 4:
+        # Canvas Interactive Positioning Commands (move, pos, drag, shift)
+        if first in ("move", "pos", "drag", "shift", "relocate") and len(tokens) >= 2:
             ref = tokens[1].upper()
-            x = int(tokens[2])
-            y = int(tokens[3])
-            ok = self.canvas.move_block(ref, x, y)
-            if self.mode == "KICAD" and ref in self.kicad_proj.pcb.components:
-                self.kicad_proj.pcb.place_component(ref, float(x), float(y))
+            ok = False
+            if len(tokens) == 3:
+                direction = tokens[2].lower()
+                step = 4
+                if direction in ("right", "r", "east"):
+                    ok = self.canvas.move_block_relative(ref, step, 0)
+                elif direction in ("left", "l", "west"):
+                    ok = self.canvas.move_block_relative(ref, -step, 0)
+                elif direction in ("up", "u", "north"):
+                    ok = self.canvas.move_block_relative(ref, 0, -2)
+                elif direction in ("down", "d", "south"):
+                    ok = self.canvas.move_block_relative(ref, 0, 2)
+                else:
+                    return f"[yellow]Invalid move direction '{direction}'. Use right, left, up, down, or x y coordinates.[/yellow]"
+            elif len(tokens) >= 4:
+                arg1 = tokens[2]
+                arg2 = tokens[3]
+                if arg1.startswith("+") or arg1.startswith("-") or arg2.startswith("+") or arg2.startswith("-"):
+                    dx = int(arg1)
+                    dy = int(arg2)
+                    ok = self.canvas.move_block_relative(ref, dx, dy)
+                elif arg1.lower() in ("right", "left", "up", "down"):
+                    step = int(arg2)
+                    dir_map = {"right": (step, 0), "left": (-step, 0), "up": (0, -step), "down": (0, step)}
+                    dx, dy = dir_map[arg1.lower()]
+                    ok = self.canvas.move_block_relative(ref, dx, dy)
+                else:
+                    try:
+                        x = int(arg1)
+                        y = int(arg2)
+                        ok = self.canvas.move_block(ref, x, y)
+                    except ValueError:
+                        ok = False
+
             if ok:
-                self._record_history(line, f"Moved {ref} -> ({x}, {y})")
-                return self.render_split_workspace(f"Moved {ref} to ({x}, {y})")
-            return f"[yellow]Component '{ref}' not found on canvas.[/yellow]"
+                b = self.canvas.blocks.get(ref)
+                if self.mode == "KICAD" and ref in self.kicad_proj.pcb.components and b:
+                    self.kicad_proj.pcb.place_component(ref, float(b.x), float(b.y))
+                pos_str = f"({b.x}, {b.y})" if b else "new position"
+                self._record_history(line, f"Moved {ref} -> {pos_str}")
+                return self.render_split_workspace(f"Moved {ref} to {pos_str}")
+            return f"[yellow]Component '{ref}' not found on canvas or invalid coordinates.[/yellow]"
 
         if first == "select" and len(tokens) >= 2:
             ref = tokens[1].upper()
@@ -240,6 +289,17 @@ class TerminusEngineBridge:
             if b:
                 return self.render_split_workspace(f"Selected {ref} at ({b.x}, {b.y})")
             return f"[yellow]Block '{ref}' not found.[/yellow]"
+
+        # Direct Save / Open / Load Aliases
+        if first in ("save", "saveas", "save_as"):
+            out = self._handle_file_command(f"file {line}", ["file"] + tokens)
+            self._record_history(line, out)
+            return out
+
+        if first in ("open", "load") and len(tokens) >= 2 and self.mode not in ("NUMERICAL", "DYNAMIC"):
+            out = self._handle_file_command(f"file open {' '.join(tokens[1:])}", ["file", "open"] + tokens[1:])
+            self._record_history(line, out)
+            return out
 
         # Global commands
         if first == "help":
