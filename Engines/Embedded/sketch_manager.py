@@ -148,53 +148,111 @@ class ProjectSketchManager:
     def add_file(self, filename: str, content: str = "") -> None:
         self.files[filename] = ProjectFile(filename=filename, content=content, is_main=False)
 
+    def sync_from_disk(self) -> bool:
+        """Checks for external editor disk modifications and updates memory buffer."""
+        proj_dir = self.get_project_dir()
+        updated = False
+        if not hasattr(self, "_file_mtimes"):
+            self._file_mtimes = {}
+
+        for fname, pfile in list(self.files.items()):
+            fpath = proj_dir / fname
+            if fpath.exists():
+                try:
+                    mtime = fpath.stat().st_mtime
+                    last_mtime = self._file_mtimes.get(fname, 0.0)
+                    if mtime > last_mtime:
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            pfile.content = f.read()
+                        self._file_mtimes[fname] = mtime
+                        updated = True
+                except Exception:
+                    pass
+        return updated
+
     def set_active_file(self, filename: str) -> bool:
         if filename in self.files:
             self.active_filename = filename
             return True
         return False
 
-    def view_code(self) -> str:
-        """Returns the formatted code buffer with line numbers and project header."""
+    def view_code(self, cursor_line: Optional[int] = None, cursor_col: Optional[int] = None) -> str:
+        """Returns the formatted code buffer with line numbers."""
+        self.sync_from_disk()
         mf = self.files.get(self.active_filename) or self.main_file
         if not mf or not mf.content.strip():
-            return f"[dim]Project '{self.project_name}' ({self.active_filename}) is empty. Type 'edit' or write code.[/dim]"
+            return f"// Project: {self.project_name} ({self.active_filename})\n// (Empty sketch. Type 'line add <code...>' or 'ide')"
 
-        lines = [
-            f"[bold cyan]=== Project: {self.project_name} | File: {mf.filename} ({len(self.files)} files in project) ===[/bold cyan]",
-            "  +-----+-------------------------------------------------------------------------+"
-        ]
-        for idx, line_text in enumerate(mf.content.splitlines(), start=1):
-            lines.append(f"  | {idx:3d} | {line_text}")
-        lines.append("  +-----+-------------------------------------------------------------------------+")
-        return "\n".join(lines)
+        lines = mf.content.splitlines()
+        formatted = [f"// Project: {self.project_name} ({self.active_filename})"]
+        for idx, line_text in enumerate(lines, start=1):
+            cursor_mark = "▶" if cursor_line == idx else " "
+            formatted.append(f"{cursor_mark}{idx:>2} | {line_text}")
+        return "\n".join(formatted)
 
     def set_content(self, new_text: str) -> None:
-        """Replaces current active file content entirely (for full pasting or typing)."""
+        """Replaces current active file content entirely."""
         mf = self.files.get(self.active_filename) or self.main_file
         if mf:
             mf.content = new_text
+            self.save_project()
 
     def append_content(self, text: str) -> None:
         mf = self.files.get(self.active_filename) or self.main_file
         if mf:
             mf.content = (mf.content + "\n" if mf.content else "") + text
+            self.save_project()
 
-    def launch_external_editor(self) -> Tuple[bool, str]:
-        """Launches host GUI editor (Notepad / VS Code / nano) on the project file."""
+    def edit_line(self, line_num: int, new_text: str) -> bool:
+        mf = self.files.get(self.active_filename) or self.main_file
+        if not mf:
+            return False
+        lines = mf.content.splitlines()
+        if 1 <= line_num <= len(lines):
+            lines[line_num - 1] = new_text
+            mf.content = "\n".join(lines) + "\n"
+            self.save_project()
+            return True
+        elif line_num == len(lines) + 1:
+            lines.append(new_text)
+            mf.content = "\n".join(lines) + "\n"
+            self.save_project()
+            return True
+        return False
+
+    def insert_line(self, line_num: int, new_text: str) -> bool:
+        mf = self.files.get(self.active_filename) or self.main_file
+        if not mf:
+            return False
+        lines = mf.content.splitlines()
+        idx = max(0, min(len(lines), line_num - 1))
+        lines.insert(idx, new_text)
+        mf.content = "\n".join(lines) + "\n"
+        self.save_project()
+        return True
+
+    def delete_line(self, line_num: int) -> bool:
+        mf = self.files.get(self.active_filename) or self.main_file
+        if not mf:
+            return False
+        lines = mf.content.splitlines()
+        if 1 <= line_num <= len(lines):
+            lines.pop(line_num - 1)
+            mf.content = "\n".join(lines) + "\n"
+            self.save_project()
+            return True
+        return False
+
+    def clear_code(self) -> None:
+        mf = self.files.get(self.active_filename) or self.main_file
+        if mf:
+            mf.content = ""
+            self.save_project()
+
+    def launch_external_editor(self, preferred_editor: Optional[str] = None) -> Tuple[bool, str]:
+        """Launches host GUI editor on the project file with auto-sync."""
         self.save_project()
         main_path = self.get_main_filepath()
+        from CORE.editor_detector import HostEditorManager
+        return HostEditorManager.launch(main_path, preferred_editor)
 
-        # Find available editor
-        editor = os.environ.get("EDITOR")
-        if not editor:
-            if sys.platform.startswith("win"):
-                editor = "notepad.exe"
-            else:
-                editor = "nano"
-
-        try:
-            subprocess.Popen([editor, str(main_path)])
-            return True, f"Opened '{main_path.name}' in external editor ({editor}). When finished, save file and run 'compile'."
-        except Exception as e:
-            return False, f"Failed to open editor '{editor}': {str(e)}"

@@ -7,11 +7,19 @@ Renders authentic engineering software interfaces:
 """
 
 from __future__ import annotations
+import sys
 import os
 import shutil
 import re
 from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 from CORE.interactive_canvas import InteractiveSchematicCanvas, CanvasBlock, format_compact_val
 from CORE.figure_renderer import TechnicalReportMetrics
@@ -121,6 +129,101 @@ class SplitWorkspaceRenderer:
         lines.append(f"[bold cyan]{footer_text[:term_cols]}[/bold cyan]")
 
         return "\n".join(lines)
+
+    @classmethod
+    def get_mode_help_panel(cls, mode: str, width: int) -> Tuple[str, str]:
+        """Formats compact quick-reference command manual for the 40% right-side window."""
+        mode_key = mode.upper()
+        header = f"── {mode_key} Quick Command Reference ──"
+
+        help_data: Dict[str, List[Tuple[str, str]]] = {
+            "CIRCUIT": [
+                ("add <Ref> <Val> <n1> <n2>", "Add component (e.g. add R1 1k in out)"),
+                ("move <Ref> <dir|x y>", "Move block (e.g. move R1 right 4)"),
+                ("tune <Ref> <val>", "Tune value (e.g. tune R1 2.2k)"),
+                ("run .tran <dt> <tstop>", "Run Transient Simulation"),
+                ("run .op / run .dc ...", "DC Operating Point / DC Sweep"),
+                ("run .ac dec 10 1 100k", "AC Frequency Sweep & Bode Plot"),
+                ("probe <net>", "Probe waveform & signal metrics"),
+                ("library [category]", "Browse SPICE component models"),
+                ("inspect <comp>", "View component specs & pinout"),
+                ("check / diagnose", "Run Circuit DRC check"),
+                ("png / export png", "Export 300 DPI vector plot"),
+                ("save [name] / file save", "Save SPICE netlist"),
+            ],
+            "KICAD": [
+                ("add <Ref> <Val> [Fmt]", "Add component (e.g. add R1 10k 0805)"),
+                ("place <Ref> <x> <y>", "Place component on PCB canvas"),
+                ("route <Net> / autoroute", "Route copper tracks on board"),
+                ("erc / drc", "Electrical & Design Rules Check"),
+                ("calc track <I> [dT]", "IPC-2152 track width calculation"),
+                ("calc via <drill> [pad]", "Via resistance, cap & inductance"),
+                ("calc 555 / opamp / filt", "Calculate circuit design parameters"),
+                ("gerber / bom", "Export Gerber files suite & BOM"),
+                ("pcb / board", "View 2D ASCII PCB board canvas"),
+                ("save [name]", "Save KiCad PCB & Schematic project"),
+            ],
+            "DYNAMIC": [
+                ("add <type> <name> [p]", "Add block (e.g. add step S1, add tf P)"),
+                ("remove <name>", "Delete block and connected wires"),
+                ("connect <B1.p> <B2.p>", "Connect signal wire between ports"),
+                ("tune <name> <p>=<v>", "Tune block parameter (e.g. tune PID1 kp=3)"),
+                ("sim [tstop] [dt] [solv]", "Run Dynamic ODE Simulation"),
+                ("model solver <rk4|eul>", "Set numerical ODE solver"),
+                ("scope <name>", "View scope waveform plot"),
+                ("check / diagnose", "Run Model Advisor pre-flight check"),
+                ("png / export png", "Export block diagram / response plot"),
+                ("save [name]", "Save Simulink dynamic model"),
+            ],
+            "NUMERICAL": [
+                ("line <N> <code...>", "Edit Line #N in 60% window"),
+                ("line add <code...>", "Append line to MATLAB script"),
+                ("ide / edit live", "Live interactive typing IDE mode"),
+                ("edit / edit menu", "Launch external editor (VSCode/Notepad)"),
+                ("run / run <file.m>", "Execute script & calculate variables"),
+                ("plot(t, x) / stem(n, x)", "Plot continuous or discrete signal"),
+                ("subplot(r, c, i)", "Configure multi-graph grid layout"),
+                ("bode(H) / step(H)", "Frequency response & step response"),
+                ("butter(...) / firwin(...)", "Digital filter design synthesis"),
+                ("whos / clear", "Inspect or clear workspace variables"),
+                ("png / export png", "Export 300 DPI publication figure"),
+                ("save [name]", "Save numerical script workspace"),
+            ],
+            "DIGITAL": [
+                ("line <N> <code...>", "Edit Line #N of HDL module"),
+                ("line add <code...>", "Append Verilog/Logic line"),
+                ("ide / edit live", "Live interactive typing IDE mode"),
+                ("edit / edit menu", "Launch external editor (VSCode/Notepad)"),
+                ("compile / synth", "RTL compilation & gate synthesis"),
+                ("wire / gate / dff", "Structural gate & FF instantiation"),
+                ("clock <Name> period=<t>", "Add clock signal generator"),
+                ("sim <time_ns>", "Run discrete event timing simulation"),
+                ("truth <bool_expression>", "Generate truth table"),
+                ("save [name]", "Save Verilog HDL module"),
+            ],
+            "EMBEDDED": [
+                ("line <N> <code...>", "Edit Line #N of C++ firmware"),
+                ("line add <code...>", "Append line to firmware sketch"),
+                ("ide / edit live", "Live interactive typing IDE mode"),
+                ("edit / edit menu", "Launch external editor (VSCode/Notepad)"),
+                ("ports / com", "Scan connected USB COM ports"),
+                ("board <board_id>", "Select MCU board (UNO, ESP32, etc.)"),
+                ("sketch example <name>", "Load template (blink, sensor)"),
+                ("compile / verify", "Compile firmware & check RAM/Flash"),
+                ("upload / flash", "Upload binary to physical board"),
+                ("serial / monitor", "Open live USB serial monitor stream"),
+                ("serial plot", "Live real-time ASCII sensor graph"),
+                ("save [name]", "Save embedded firmware project"),
+            ]
+        }
+
+        cmds = help_data.get(mode_key, help_data.get("CIRCUIT", []))
+        lines = [header]
+        for cmd_syntax, desc in cmds:
+            lines.append(f" • {cmd_syntax:<22s} {desc}")
+
+        metrics_card = f"── Help Manual Controls ──\n • Type any command to resume live dashboard\n • 'help off' to close manual | 'mode <name>' to switch"
+        return "\n".join(lines), metrics_card
 
     @classmethod
     def render(cls, bridge: Any, status_message: str = "") -> str:
@@ -242,23 +345,62 @@ class SplitWorkspaceRenderer:
 
         elif mode in ("NUMERICAL", "MATLAB"):
             proj_name = bridge.matlab_proj.project_name or "MATLAB_Workspace"
-            code_lines = bridge.matlab_proj.view_code().splitlines()
+            bridge.matlab_proj.sync_from_disk()
+            cursor_line = getattr(bridge, "ide_cursor_line", None)
+            cursor_col = getattr(bridge, "ide_cursor_col", None)
+            code_lines = bridge.matlab_proj.view_code(cursor_line=cursor_line, cursor_col=cursor_col).splitlines()
             left_content = "\n".join(code_lines[:canvas_h])
-            if any(sp.traces for sp in bridge.figure.subplots.values()):
-                sp = bridge.figure.subplots[0]
-                if sp.traces:
+            has_traces = any(sp.traces for sp in bridge.figure.subplots.values())
+
+            # Format calculation results & execution output
+            exec_summary_lines = []
+            if getattr(bridge, "last_numerical_logs", None):
+                for idx, stmt, res in bridge.last_numerical_logs[-6:]:
+                    if str(res).startswith("Error"):
+                        exec_summary_lines.append(f" • [red]L{idx:>2} Err:[/red] {str(res)[:right_w-15]}")
+                    elif res is not None and not str(res).startswith("Plot trace") and not str(res).startswith("Stem trace"):
+                        if isinstance(res, np.ndarray):
+                            val_fmt = f"Array {res.shape} (min={np.min(res):.2g}, max={np.max(res):.2g})"
+                        else:
+                            val_fmt = f"{res}"
+                            if len(val_fmt) > right_w - 18:
+                                val_fmt = val_fmt[:right_w - 21] + "..."
+                        clean_stmt = stmt[:14]
+                        exec_summary_lines.append(f" • {clean_stmt:<14s} = {val_fmt}")
+            elif getattr(bridge, "last_numerical_eval", None):
+                ev_cmd, ev_val = bridge.last_numerical_eval
+                val_fmt = f"{ev_val}" if not isinstance(ev_val, np.ndarray) else f"Array {ev_val.shape}"
+                exec_summary_lines.append(f" • {ev_cmd[:14]:<14s} = {val_fmt[:right_w-20]}")
+
+            var_list = []
+            for vk, vv in list(bridge.numerical_workspace.variables.items())[:8]:
+                if vk not in ("pi", "e", "j", "i"):
+                    shape_str = f"Array {vv.shape}" if isinstance(vv, np.ndarray) else (f"{len(vv)} elem" if isinstance(vv, list) else f"{vv}")
+                    var_list.append(f" • {vk:8s} : {shape_str[:right_w-14]}")
+
+            if has_traces:
+                sp = next((s for s in bridge.figure.subplots.values() if s.traces), None)
+                if sp and sp.traces:
                     from CORE.ascii_canvas import AsciiPlotter
                     tr = sp.traces[0]
-                    right_graph_content = AsciiPlotter.plot(tr.x, tr.y, width=right_w - 2, height=max(7, canvas_h - 7), title=f"Plot: {tr.label}", annotate=False)
+                    plot_h = max(7, canvas_h - 7)
+                    right_graph_content = AsciiPlotter.plot(tr.x, tr.y, width=right_w - 2, height=plot_h, title=f"Plot: {tr.label}", annotate=False)
             else:
-                var_list = []
-                for vk, vv in list(bridge.numerical_workspace.variables.items())[:8]:
-                    if vk not in ("pi", "e", "j", "i"):
-                        shape_str = f"{len(vv)} elem" if isinstance(vv, (list, np.ndarray)) else f"{vv}"
-                        var_list.append(f" • {vk:8s} : {shape_str}")
-                right_graph_content = "── Workspace Variables (whos) ──\n" + ("\n".join(var_list) if var_list else " (Workspace empty)")
+                if exec_summary_lines:
+                    right_graph_content = "── Calculation Results & Output ──\n" + "\n".join(exec_summary_lines) + "\n" + ("── Workspace Variables (whos) ──\n" + "\n".join(var_list) if var_list else "")
+                else:
+                    right_graph_content = "── Workspace Variables (whos) ──\n" + ("\n".join(var_list) if var_list else " (Workspace empty. Type 'run' or 'line add <code...>')")
+
             if bridge.figure.metrics:
-                right_metrics_card = f"── Signal Metrics ──\n{bridge.figure.metrics.to_summary_line()}"
+                m_str = bridge.figure.metrics.to_summary_line()
+                if exec_summary_lines:
+                    recent_outs = "\n".join(exec_summary_lines[-2:])
+                    right_metrics_card = f"── Signal Metrics & Results ──\n{m_str}\n{recent_outs}"
+                else:
+                    right_metrics_card = f"── Signal Metrics ──\n{m_str}"
+            else:
+                lines_cnt = len(bridge.matlab_proj.source_code.splitlines())
+                right_metrics_card = f"── IDE Script Status ──\n • Lines: {lines_cnt} | File: {bridge.matlab_proj.active_filename}\n • Auto-sync: ON | Run: 'run' | Edit: 'edit menu'"
 
         elif mode in ("DYNAMIC", "SIMULINK"):
             proj_name = bridge.dynamic_diagram.name or "SimulinkModel"
@@ -297,18 +439,35 @@ class SplitWorkspaceRenderer:
 
         elif mode in ("DIGITAL", "XILINX"):
             proj_name = bridge.logic_circuit.name or "XilinxVivado"
-            left_content = f"// Xilinx Vivado HDL Module: {proj_name}\nmodule {proj_name} (\n  input clk, reset,\n  output [7:0] data_out\n);\n  // Gates: {len(bridge.logic_circuit.gates)}\n  // Wires: {len(bridge.logic_circuit.wires)}\nendmodule"
-            right_graph_content = "── Logic Timing Diagram ──\n" + (bridge.logic_circuit.render_timing_diagram(width=right_w - 4) if hasattr(bridge.logic_circuit, 'render_timing_diagram') else "No logic simulation run. Run 'sim 100ns'")
-            right_metrics_card = f"── FPGA Resource Utilization ──\n * LUTs: {len(bridge.logic_circuit.gates)}\n * Flip-Flops: 8\n * Max Clock: 250.0 MHz"
+            bridge.logic_circuit.sync_from_disk()
+            cursor_line = getattr(bridge, "ide_cursor_line", None)
+            cursor_col = getattr(bridge, "ide_cursor_col", None)
+            left_content = "\n".join(bridge.logic_circuit.view_code(cursor_line=cursor_line, cursor_col=cursor_col).splitlines()[:canvas_h])
+            if getattr(bridge, "last_logic_traces", None):
+                from Engines.Digital_Logic.event_sim import DigitalWaveformTracer
+                right_graph_content = DigitalWaveformTracer.render_timing_diagram(bridge.last_logic_traces, max_time_ns=100.0)
+            else:
+                gates_summary = [f" • {g.name}: {g.gate_type} ({', '.join(getattr(g, 'input_wires', []))} -> {getattr(g, 'output_wire', '')})" for g in list(bridge.logic_circuit.gates.values())[:6]]
+                right_graph_content = "── Xilinx RTL Netlist ──\n" + ("\n".join(gates_summary) if gates_summary else " (RTL Netlist empty. Type 'line add <code...>' or 'sim')")
+            right_metrics_card = f"── FPGA Resource Utilization ──\n • LUTs: {len(bridge.logic_circuit.gates)} | Flip-Flops: {len(bridge.logic_circuit.flip_flops)}\n • Wires: {len(bridge.logic_circuit.wires)} | Clocks: {len(bridge.logic_circuit.clocks)}"
 
         elif mode in ("EMBEDDED", "ARDUINO_IDE"):
             proj_name = bridge.sketch_proj.project_name or "ArduinoProject"
-            left_content = "\n".join(bridge.sketch_proj.view_code().splitlines()[:canvas_h])
+            bridge.sketch_proj.sync_from_disk()
+            cursor_line = getattr(bridge, "ide_cursor_line", None)
+            cursor_col = getattr(bridge, "ide_cursor_col", None)
+            left_content = "\n".join(bridge.sketch_proj.view_code(cursor_line=cursor_line, cursor_col=cursor_col).splitlines()[:canvas_h])
             if bridge.ascii_plotter.channels:
-                right_graph_content = bridge.ascii_plotter.render_graph()
+                right_graph_content = bridge.ascii_plotter.render()
             else:
-                right_graph_content = f"── Arduino Telemetry Monitor ──\n * Port: {bridge.active_com_port}\n * Baud: 115200\n * Target: {bridge.target_board.name if bridge.target_board else 'UNO'}"
-            right_metrics_card = "── MCU Memory Metrics ──\n * Flash: 2.1 KB / 32 KB (6%)\n * SRAM: 184 B / 2048 B (8%)"
+                right_graph_content = f"── Arduino Telemetry Monitor ──\n • Port: {bridge.active_com_port}\n • Baud: 115200\n • Target: {bridge.target_board.name if bridge.target_board else 'UNO'}"
+            right_metrics_card = f"── MCU Memory Metrics ──\n • Board: {bridge.target_board.name if bridge.target_board else 'UNO'} | Port: {bridge.active_com_port}\n • Flash: 32 KB | SRAM: 2 KB"
+
+        # If user requested help manual, override right window content
+        if getattr(bridge, "show_help_manual", False):
+            help_body, help_card = cls.get_mode_help_panel(mode, right_w)
+            right_graph_content = help_body
+            right_metrics_card = help_card
 
         return cls.render_workspace_screen(
             mode=mode,

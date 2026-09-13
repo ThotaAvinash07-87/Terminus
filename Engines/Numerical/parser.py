@@ -88,6 +88,13 @@ class NumericalWorkspace:
             "tf_d": lambda b, a, dt=1.0, name="H(z)": DiscreteTransferFunction(b, a, dt=dt, name=name),
             "fft": lambda wf: wf.compute_fft() if isinstance(wf, Waveform) else np.fft.rfft(wf),
             "ifft": np.fft.irfft,
+            # Plotting and figure built-ins
+            "plot": self._builtin_plot,
+            "stem": self._builtin_stem,
+            "subplot": lambda r, c, i: active_figure.set_subplot_grid(r, c, i),
+            "title": lambda t: setattr(active_figure, "title", t),
+            "grid": lambda *args: None,
+            "hold": lambda *args: None,
             # Advanced DSP built-ins from DSPSignalEngine
             "butter": DSPSignalEngine.butterworth_filter,
             "firwin": DSPSignalEngine.fir_window_filter,
@@ -102,6 +109,36 @@ class NumericalWorkspace:
             "bode": DSPSignalEngine.bode_response,
             "metrics": TechnicalReportMetrics.compute_from_waveform,
         }
+
+    def _builtin_plot(self, *args, **kwargs) -> str:
+        fig = active_figure
+        if len(args) == 1:
+            y_arr = np.asarray(args[0], dtype=float)
+            x_arr = np.arange(len(y_arr))
+            fig.add_trace(x_arr, y_arr, label="Signal", style="-")
+            fig.metrics = TechnicalReportMetrics.compute_from_waveform(x_arr, y_arr, mode="MATLAB", project="Workspace")
+        elif len(args) >= 2:
+            x_arr = np.asarray(args[0], dtype=float)
+            y_arr = np.asarray(args[1], dtype=float)
+            lbl = args[2] if len(args) > 2 and isinstance(args[2], str) else "Signal"
+            fig.add_trace(x_arr, y_arr, label=lbl, style="-")
+            fig.metrics = TechnicalReportMetrics.compute_from_waveform(x_arr, y_arr, mode="MATLAB", project="Workspace")
+        return "Plot trace generated"
+
+    def _builtin_stem(self, *args, **kwargs) -> str:
+        fig = active_figure
+        if len(args) == 1:
+            y_arr = np.asarray(args[0], dtype=float)
+            x_arr = np.arange(len(y_arr))
+            fig.add_trace(x_arr, y_arr, label="Signal", style="stem")
+            fig.metrics = TechnicalReportMetrics.compute_from_waveform(x_arr, y_arr, mode="MATLAB", project="Workspace")
+        elif len(args) >= 2:
+            x_arr = np.asarray(args[0], dtype=float)
+            y_arr = np.asarray(args[1], dtype=float)
+            lbl = args[2] if len(args) > 2 and isinstance(args[2], str) else "Signal"
+            fig.add_trace(x_arr, y_arr, label=lbl, style="stem")
+            fig.metrics = TechnicalReportMetrics.compute_from_waveform(x_arr, y_arr, mode="MATLAB", project="Workspace")
+        return "Stem trace generated"
 
     def get_eval_context(self) -> Dict[str, Any]:
         ctx = dict(self.builtins)
@@ -144,17 +181,19 @@ class NumericalASTParser:
         """Translates MATLAB-style matrix syntax like `[1 2; 3 4]` or `0:0.01:1` to valid Python."""
         text = code.strip()
 
-        # Handle colon range: start:step:stop or start:stop (with decimals, scientific notation, or expressions)
-        def colon_repl(match: re.Match) -> str:
-            raw = match.group(0)
-            parts = raw.split(":")
-            if len(parts) == 2:
-                return f"np.arange({parts[0]}, float({parts[1]}) + 1e-12, 1.0)"
-            elif len(parts) == 3:
-                return f"np.arange({parts[0]}, float({parts[2]}) + (float({parts[1]}) * 0.5), float({parts[1]}))"
-            return raw
+        # Handle 3-part colon range: start:step:stop (e.g., 0:1/Fs:0.1 or 0:0.01:1)
+        text = re.sub(
+            r'((?:[a-zA-Z0-9_\.]|\([^)]+\)|[0-9]+/[a-zA-Z0-9_\.]+)+):((?:[a-zA-Z0-9_\.]|\([^)]+\)|[0-9]+/[a-zA-Z0-9_\.]+)+):((?:[a-zA-Z0-9_\.]|\([^)]+\)|[0-9]+/[a-zA-Z0-9_\.]+)+)',
+            lambda m: f"np.arange({m.group(1)}, ({m.group(3)}) + (({m.group(2)}) * 0.5), {m.group(2)})",
+            text
+        )
 
-        text = re.sub(r'(?<![a-zA-Z0-9_\.])\b(?:\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\d+):(?:\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\d+)(?::(?:\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\d+))?\b', colon_repl, text)
+        # Handle 2-part colon range: start:stop (e.g., 1:100 or 0:10)
+        text = re.sub(
+            r'(?<![:a-zA-Z0-9_\.])([a-zA-Z0-9_\.]+|\([^)]+\)):([a-zA-Z0-9_\.]+|\([^)]+\))(?![a-zA-Z0-9_\.:])',
+            lambda m: f"np.arange({m.group(1)}, ({m.group(2)}) + 1.0, 1.0)",
+            text
+        )
 
         # Handle matrix brackets: e.g. [1 2; 3 4] -> np.array([[1, 2], [3, 4]])
         def matrix_bracket_repl(match: re.Match) -> str:

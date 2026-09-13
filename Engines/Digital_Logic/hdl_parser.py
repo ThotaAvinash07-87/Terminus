@@ -3,7 +3,8 @@
 from __future__ import annotations
 import itertools
 import re
-from typing import Dict, List, Optional, Set, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional, Set, Tuple, Union
 from CORE.common_math import parse_eng_unit
 from .gates import (
     LogicValue,
@@ -24,9 +25,9 @@ from .gates import (
 
 
 class LogicCircuit:
-    """Manages digital gates, flip-flops, and wire interconnections."""
+    """Manages digital gates, flip-flops, wire interconnections, and live Verilog HDL editor buffer."""
 
-    def __init__(self, name: str = "DigitalCircuit"):
+    def __init__(self, name: str = "XilinxTop"):
         self.name = name
         self.wires: Set[str] = set()
         self.gates: Dict[str, LogicGate] = {}
@@ -34,6 +35,123 @@ class LogicCircuit:
         self.clocks: Dict[str, ClockGenerator] = {}
         self.inputs: List[str] = []
         self.outputs: List[str] = []
+        self._source_code: str = (
+            f"// ==========================================\n"
+            f"// Xilinx Vivado HDL Module: {name}\n"
+            f"// ==========================================\n\n"
+            f"wire a, b, clk, q, out;\n"
+            f"clock CLK period=10ns\n"
+            f"gate G1 AND a b -> out\n"
+            f"dff D1 clk=clk d=out q=q\n"
+        )
+        self.active_filename = f"{name}.v"
+        self._file_mtime: float = 0.0
+
+    @property
+    def source_code(self) -> str:
+        self.sync_from_disk()
+        return self._source_code
+
+    @source_code.setter
+    def source_code(self, val: str):
+        self._source_code = val
+        self._recompile_hdl()
+
+    def _recompile_hdl(self):
+        """Parses the current source code into circuit gates and wires."""
+        self.wires.clear()
+        self.gates.clear()
+        self.flip_flops.clear()
+        self.clocks.clear()
+        self.inputs.clear()
+        self.outputs.clear()
+        for line in self._source_code.splitlines():
+            HDLParser.parse_line(self, line)
+
+    def sync_from_disk(self) -> bool:
+        """Checks for external editor disk modifications."""
+        from CORE.storage_manager import StorageManager
+        sm = StorageManager.get_instance()
+        proj_dir = sm.get_mode_dir("DIGITAL") / self.name
+        fpath = proj_dir / self.active_filename
+        if fpath.exists():
+            try:
+                mtime = fpath.stat().st_mtime
+                if mtime > self._file_mtime:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        self._source_code = f.read()
+                    self._file_mtime = mtime
+                    self._recompile_hdl()
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def save_to_disk(self) -> Path:
+        from CORE.storage_manager import StorageManager
+        sm = StorageManager.get_instance()
+        proj_dir = sm.get_mode_dir("DIGITAL") / self.name
+        proj_dir.mkdir(parents=True, exist_ok=True)
+        fpath = proj_dir / self.active_filename
+        with open(fpath, "w", encoding="utf-8") as f:
+            f.write(self._source_code)
+        self._file_mtime = fpath.stat().st_mtime
+        return fpath
+
+    def edit_line(self, line_num: int, new_text: str) -> bool:
+        lines = self._source_code.splitlines()
+        if 1 <= line_num <= len(lines):
+            lines[line_num - 1] = new_text
+            self.source_code = "\n".join(lines) + "\n"
+            self.save_to_disk()
+            return True
+        elif line_num == len(lines) + 1:
+            lines.append(new_text)
+            self.source_code = "\n".join(lines) + "\n"
+            self.save_to_disk()
+            return True
+        return False
+
+    def insert_line(self, line_num: int, new_text: str) -> bool:
+        lines = self._source_code.splitlines()
+        idx = max(0, min(len(lines), line_num - 1))
+        lines.insert(idx, new_text)
+        self.source_code = "\n".join(lines) + "\n"
+        self.save_to_disk()
+        return True
+
+    def delete_line(self, line_num: int) -> bool:
+        lines = self._source_code.splitlines()
+        if 1 <= line_num <= len(lines):
+            lines.pop(line_num - 1)
+            self.source_code = "\n".join(lines) + "\n"
+            self.save_to_disk()
+            return True
+        return False
+
+    def append_line(self, line_text: str) -> None:
+        self.source_code = (self._source_code + "\n" if self._source_code else "") + line_text + "\n"
+        self.save_to_disk()
+
+    def clear_code(self) -> None:
+        self.source_code = ""
+        self.save_to_disk()
+
+    def view_code(self, cursor_line: Optional[int] = None, cursor_col: Optional[int] = None) -> str:
+        self.sync_from_disk()
+        if not self._source_code.strip():
+            return f"// Module: {self.name} ({self.active_filename})\n// (Empty HDL script. Type 'line add <code...>' or 'ide')"
+        lines = self._source_code.splitlines()
+        formatted = [f"// Module: {self.name} ({self.active_filename})"]
+        for i, l in enumerate(lines, 1):
+            cursor_mark = "▶" if cursor_line == i else " "
+            formatted.append(f"{cursor_mark}{i:02d} │ {l}")
+        return "\n".join(formatted)
+
+    def launch_external_editor(self, preferred_editor: Optional[str] = None) -> Tuple[bool, str]:
+        fpath = self.save_to_disk()
+        from CORE.editor_detector import HostEditorManager
+        return HostEditorManager.launch(fpath, preferred_editor)
 
     def clear(self) -> None:
         self.wires.clear()
@@ -42,6 +160,7 @@ class LogicCircuit:
         self.clocks.clear()
         self.inputs.clear()
         self.outputs.clear()
+
 
 
 class HDLParser:

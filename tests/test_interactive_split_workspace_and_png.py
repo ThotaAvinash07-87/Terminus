@@ -69,6 +69,19 @@ class TestInteractiveSplitWorkspaceAndPNG(unittest.TestCase):
             self.assertIn("Terminal Log:", ws_view)
             self.assertIn("Testing Mode", ws_view)
 
+    def test_help_manual_displayed_on_right_split_panel(self):
+        """Validates that entering 'help' renders the quick command manual in the right 40% panel for all modes."""
+        modes = ["CIRCUIT", "NUMERICAL", "DYNAMIC", "DIGITAL", "EMBEDDED", "KICAD"]
+        for m in modes:
+            self.bridge.switch_mode(m)
+            res = self.bridge.execute_command("help")
+            self.assertTrue(self.bridge.show_help_manual)
+            self.assertIn("Quick Command Reference", res)
+            self.assertIn(m, res)
+            # Closing help
+            res_close = self.bridge.execute_command("help off")
+            self.assertFalse(self.bridge.show_help_manual)
+
     def test_matlab_numerical_code_buffer_and_split_screen(self):
         """Validates MATLAB mode code writing on left 60% and figure/data on right 40%."""
         self.bridge.switch_mode("NUMERICAL")

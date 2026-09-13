@@ -69,11 +69,11 @@ class USBPortManager:
     """Manages physical USB port scanning, identification, selection, and hardware line control."""
 
     @staticmethod
-    def scan_ports() -> List[USBDeviceInfo]:
+    def scan_ports(include_slow_fallback: bool = False) -> List[USBDeviceInfo]:
         """Scans the system for all connected physical USB COM and serial devices."""
         devices: List[USBDeviceInfo] = []
 
-        # 1. Try PySerial list_ports
+        # 1. Fast PySerial list_ports
         try:
             import serial.tools.list_ports
             for p in serial.tools.list_ports.comports():
@@ -129,16 +129,16 @@ class USBPortManager:
                     detected_board_hint=hint,
                     is_usb_serial=is_usb
                 ))
-            if devices:
+            if devices or not include_slow_fallback:
                 return devices
         except Exception:
             pass
 
-        # 2. Windows PowerShell CimInstance fallback
-        if sys.platform.startswith("win"):
+        # 2. Windows PowerShell CimInstance fallback (only when explicitly requested)
+        if include_slow_fallback and sys.platform.startswith("win"):
             try:
                 cmd = 'powershell -NoProfile -Command "Get-CimInstance Win32_PnPEntity | Where-Object { $_.Name -match \'\\(COM\\d+\\)\' } | Select-Object Name, DeviceID, Manufacturer"'
-                res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=3)
+                res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=2)
                 lines = [l.strip() for l in res.stdout.splitlines() if l.strip() and not l.startswith("Name") and not l.startswith("----")]
                 for l in lines:
                     m = re.search(r'\((COM\d+)\)', l)

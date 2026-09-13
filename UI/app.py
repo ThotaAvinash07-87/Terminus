@@ -1,12 +1,18 @@
-"""Main Textual application and unified command router for TerminusECE."""
-
 from __future__ import annotations
+import sys
 import os
 import re
 import shlex
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -170,6 +176,9 @@ class TerminusEngineBridge:
         # Global Signal / Variable bus for piping
         self.global_store: Dict[str, Any] = {}
 
+        # Right Panel Help Manual View State
+        self.show_help_manual: bool = False
+
     def switch_mode(self, mode_str: str) -> str:
         m = mode_str.lower().strip()
         if m in ("circuit", "ltspice", "spice"):
@@ -302,10 +311,19 @@ class TerminusEngineBridge:
             return out
 
         # Global commands
-        if first == "help":
-            out = self._cmd_help()
-            self._record_history(line, "Displayed help manual.")
-            return out
+        if first in ("help", "man", "?"):
+            if len(tokens) > 1 and tokens[1].lower() in ("off", "close", "hide", "exit"):
+                self.show_help_manual = False
+                self._record_history(line, "Closed help manual.")
+                return self.render_split_workspace("Closed help manual.")
+            else:
+                self.show_help_manual = True
+                self._record_history(line, f"Displayed {self.mode} help manual on right panel.")
+                return self.render_split_workspace(f"Help Manual: {self.mode} (Type any command or 'help off' to close)")
+
+        # Clear help manual on operational commands
+        if first not in ("screen", "workspace", "view", "split", "gui", "refresh"):
+            self.show_help_manual = False
 
         if first == "mode":
             if len(tokens) < 2:
@@ -1576,12 +1594,57 @@ class TerminusEngineBridge:
     def _handle_numerical(self, line: str, tokens: List[str]) -> str:
         first = tokens[0].lower()
 
+        # 0. In-Workspace Line & Interactive IDE Commands
+        if first in ("line", "lines"):
+            if len(tokens) < 2:
+                return (
+                    "[bold cyan]=== In-Workspace MATLAB Script Editor ===[/bold cyan]\n"
+                    "  line <N> <code...>           - Edit/replace Line #N\n"
+                    "  line add <code...>           - Append a line of code\n"
+                    "  line insert <N> <code...>    - Insert code before Line #N\n"
+                    "  line del / delete <N>        - Delete Line #N\n"
+                    "  code clear                   - Clear script buffer\n"
+                    "  edit menu                    - Select host editor (VS Code, Cursor, Notepad++, Notepad)\n"
+                    "  ide / edit live              - Enter live interactive typing IDE mode"
+                )
+            sub = tokens[1].lower()
+            if sub in ("add", "append"):
+                code_txt = line[line.lower().find(sub) + len(sub):].strip()
+                self.matlab_proj.append_content(code_txt)
+                return f"[green]Appended line to MATLAB script.[/green] (Total: {len(self.matlab_proj.source_code.splitlines())} lines)"
+            elif sub in ("del", "delete", "remove", "rm"):
+                if len(tokens) < 3 or not tokens[2].isdigit():
+                    raise ValueError("Usage: line del <line_number>")
+                lnum = int(tokens[2])
+                ok = self.matlab_proj.delete_line(lnum)
+                if ok:
+                    return f"[green]Deleted Line #{lnum} from MATLAB script.[/green]"
+                return f"[yellow]Line #{lnum} out of range.[/yellow]"
+            elif sub in ("insert", "ins"):
+                if len(tokens) < 4 or not tokens[2].isdigit():
+                    raise ValueError("Usage: line insert <line_number> <code...>")
+                lnum = int(tokens[2])
+                code_txt = " ".join(tokens[3:])
+                self.matlab_proj.insert_line(lnum, code_txt)
+                return f"[green]Inserted code at Line #{lnum}.[/green]"
+            elif tokens[1].isdigit():
+                lnum = int(tokens[1])
+                code_txt = " ".join(tokens[2:])
+                ok = self.matlab_proj.edit_line(lnum, code_txt)
+                if ok:
+                    return f"[green]Updated Line #{lnum}:[/green] {code_txt}"
+                return f"[yellow]Line #{lnum} out of range.[/yellow]"
+
         # 1. Project & Script Management (MATLAB .m workflow)
-        if first in ("project", "script", "code", "edit"):
+        if first in ("project", "script", "code", "edit", "editor"):
             if first in ("code", "script") and (len(tokens) == 1 or tokens[1].lower() in ("show", "view", "cat")):
                 return self.matlab_proj.view_code()
 
-            sub = tokens[1].lower() if len(tokens) > 1 else ("open" if first == "edit" else "show")
+            sub = tokens[1].lower() if len(tokens) > 1 else ("open" if first in ("edit", "editor") else "show")
+
+            if sub in ("menu", "list", "select", "options", "installed") or (first == "editor" and len(tokens) == 1):
+                from CORE.editor_detector import HostEditorManager
+                return HostEditorManager.format_editor_menu()
 
             if first == "project" and len(tokens) > 1 and sub not in ("new", "create", "open", "save", "list"):
                 pname = tokens[1]
@@ -1593,8 +1656,14 @@ class TerminusEngineBridge:
                 self.matlab_proj.new_project(pname)
                 return f"[green]Created new MATLAB project:[/green] [bold]{pname}[/bold] in {self.matlab_proj.get_project_dir()}"
 
-            if sub in ("open", "external", "launch") or (first == "edit" and len(tokens) == 1):
+            if sub in ("open", "external", "launch") or (first in ("edit", "editor") and len(tokens) == 1):
                 ok, msg = self.matlab_proj.launch_external_editor()
+                return f"[{'green' if ok else 'yellow'}]{msg}[/{'green' if ok else 'yellow'}]"
+
+            # Check if user specified editor: e.g. edit vscode, edit cursor, edit notepad++, edit notepad, edit antigravity
+            if first in ("edit", "editor") and len(tokens) >= 2 and sub not in ("set", "paste", "replace", "append", "clear"):
+                pref_ed = tokens[1]
+                ok, msg = self.matlab_proj.launch_external_editor(preferred_editor=pref_ed)
                 return f"[{'green' if ok else 'yellow'}]{msg}[/{'green' if ok else 'yellow'}]"
 
             if sub in ("set", "paste", "replace"):
@@ -1608,7 +1677,7 @@ class TerminusEngineBridge:
                 return f"[green]Appended line to MATLAB script[/green] (Total: {len(self.matlab_proj.source_code.splitlines())} lines)."
 
             if sub == "clear":
-                self.matlab_proj.set_content("")
+                self.matlab_proj.clear_code()
                 return "MATLAB script buffer cleared."
 
             # Direct append if 'code <text>'
@@ -1626,6 +1695,7 @@ class TerminusEngineBridge:
                         target_code = f.read()
 
             logs = self.numerical_parser.execute_script(target_code)
+            self.last_numerical_logs = logs
             out_lines = [f"[bold green]=== Executed MATLAB Script: {self.matlab_proj.project_name} ({len(logs)} statements) ===[/bold green]"]
             for idx, stmt, res in logs:
                 if str(res).startswith("Error"):
@@ -1731,6 +1801,7 @@ class TerminusEngineBridge:
 
         # 7. Standard MATLAB Line Execution
         val = self.numerical_parser.execute(line)
+        self.last_numerical_eval = (line, val)
         if val is None:
             return ""
         if isinstance(val, (np.ndarray, list)):
@@ -2211,19 +2282,110 @@ class TerminusEngineBridge:
     def _handle_digital(self, line: str, tokens: List[str]) -> str:
         first = tokens[0].lower()
 
+        # 0. In-Workspace Line & Interactive IDE Commands
+        if first in ("line", "lines"):
+            if len(tokens) < 2:
+                return (
+                    "[bold cyan]=== In-Workspace Xilinx HDL Editor ===[/bold cyan]\n"
+                    "  line <N> <code...>           - Edit/replace Line #N\n"
+                    "  line add <code...>           - Append a line of HDL code\n"
+                    "  line insert <N> <code...>    - Insert HDL code before Line #N\n"
+                    "  line del / delete <N>        - Delete Line #N\n"
+                    "  code clear                   - Clear HDL buffer\n"
+                    "  edit menu                    - Select host editor (VS Code, Cursor, Notepad++, Notepad)\n"
+                    "  ide / edit live              - Enter live interactive typing IDE mode"
+                )
+            sub = tokens[1].lower()
+            if sub in ("add", "append"):
+                code_txt = line[line.lower().find(sub) + len(sub):].strip()
+                self.logic_circuit.append_line(code_txt)
+                return f"[green]Appended line to HDL buffer.[/green] (Gates: {len(self.logic_circuit.gates)})"
+            elif sub in ("del", "delete", "remove", "rm"):
+                if len(tokens) < 3 or not tokens[2].isdigit():
+                    raise ValueError("Usage: line del <line_number>")
+                lnum = int(tokens[2])
+                ok = self.logic_circuit.delete_line(lnum)
+                if ok:
+                    return f"[green]Deleted Line #{lnum} from HDL buffer.[/green]"
+                return f"[yellow]Line #{lnum} out of range.[/yellow]"
+            elif sub in ("insert", "ins"):
+                if len(tokens) < 4 or not tokens[2].isdigit():
+                    raise ValueError("Usage: line insert <line_number> <code...>")
+                lnum = int(tokens[2])
+                code_txt = " ".join(tokens[3:])
+                self.logic_circuit.insert_line(lnum, code_txt)
+                return f"[green]Inserted code at Line #{lnum}.[/green]"
+            elif tokens[1].isdigit():
+                lnum = int(tokens[1])
+                code_txt = " ".join(tokens[2:])
+                ok = self.logic_circuit.edit_line(lnum, code_txt)
+                if ok:
+                    return f"[green]Updated Line #{lnum}:[/green] {code_txt}"
+                return f"[yellow]Line #{lnum} out of range.[/yellow]"
+
+        # 1. HDL Code & External Editor Management
+        if first in ("code", "hdl", "script", "edit", "editor"):
+            if first in ("code", "hdl", "script") and (len(tokens) == 1 or tokens[1].lower() in ("show", "view", "cat")):
+                return self.logic_circuit.view_code()
+
+            sub = tokens[1].lower() if len(tokens) > 1 else ("open" if first in ("edit", "editor") else "show")
+
+            if sub in ("menu", "list", "select", "options", "installed") or (first == "editor" and len(tokens) == 1):
+                from CORE.editor_detector import HostEditorManager
+                return HostEditorManager.format_editor_menu()
+
+            if sub in ("open", "external", "launch") or (first in ("edit", "editor") and len(tokens) == 1):
+                ok, msg = self.logic_circuit.launch_external_editor()
+                return f"[{'green' if ok else 'yellow'}]{msg}[/{'green' if ok else 'yellow'}]"
+
+            if first in ("edit", "editor") and len(tokens) >= 2 and sub not in ("set", "paste", "replace", "append", "clear"):
+                pref_ed = tokens[1]
+                ok, msg = self.logic_circuit.launch_external_editor(preferred_editor=pref_ed)
+                return f"[{'green' if ok else 'yellow'}]{msg}[/{'green' if ok else 'yellow'}]"
+
+            if sub in ("set", "paste", "replace"):
+                new_code = line[line.lower().find(sub) + len(sub):].strip()
+                self.logic_circuit.source_code = new_code
+                self.logic_circuit.save_to_disk()
+                return f"[green]Updated HDL buffer[/green] ({len(self.logic_circuit.gates)} gates, {len(self.logic_circuit.flip_flops)} FFs)."
+
+            if sub == "append":
+                append_txt = line[line.lower().find("append") + 6:].strip()
+                self.logic_circuit.append_line(append_txt)
+                return f"[green]Appended line to HDL buffer[/green]."
+
+            if sub == "clear":
+                self.logic_circuit.clear_code()
+                return "HDL script buffer cleared."
+
+            # Direct append if 'code <text>'
+            direct_text = line[len(tokens[0]):].strip()
+            self.logic_circuit.append_line(direct_text)
+            return f"[green]Appended line to HDL module.[/green]"
+
+        if first in ("compile", "verify", "synth", "synthesize"):
+            self.logic_circuit.sync_from_disk()
+            self.logic_circuit._recompile_hdl()
+            return (
+                f"[bold green]=== Xilinx RTL Synthesis & Compilation Succeeded ===[/bold green]\n"
+                f"  Module Name : [bold]{self.logic_circuit.name}[/bold]\n"
+                f"  Wires       : {len(self.logic_circuit.wires)}\n"
+                f"  Logic Gates : {len(self.logic_circuit.gates)}\n"
+                f"  Flip-Flops  : {len(self.logic_circuit.flip_flops)}\n"
+                f"  Clocks      : {len(self.logic_circuit.clocks)}"
+            )
+
         if first == "truth" or first == "truthtable":
             expr = line[len(first):].strip()
             return HDLParser.generate_truth_table(expr)
 
         if first in ("wire", "gate", "dff", "clock", "input", "output"):
-            circuit = HDLParser.parse(line)
-            self.logic_circuit.wires.update(circuit.wires)
-            self.logic_circuit.gates.update(circuit.gates)
-            self.logic_circuit.flip_flops.update(circuit.flip_flops)
-            self.logic_circuit.clocks.update(circuit.clocks)
+            # Update circuit and append to source code buffer
+            self.logic_circuit.append_line(line)
             return f"[green]Updated Digital Logic Circuit:[/green] {len(self.logic_circuit.gates)} gate(s), {len(self.logic_circuit.flip_flops)} FF(s)"
 
         if first in ("sim", "simulate", "run"):
+            self.logic_circuit.sync_from_disk()
             max_t = parse_eng_unit(tokens[1]) if len(tokens) > 1 else 100.0
             if max_t < 1e-3:
                 max_t = max_t * 1e9
@@ -2317,8 +2479,53 @@ class TerminusEngineBridge:
             self.arduino.set_board(spec.id)
             return f"[green]Target board switched to:[/green] [bold]{spec.name}[/bold] ({spec.mcu}, {spec.clock_mhz}MHz, {spec.flash_kb}KB Flash, {spec.ram_kb}KB RAM)"
 
+        # 0. In-Workspace Line & Interactive IDE Commands
+        if first in ("line", "lines"):
+            if len(tokens) < 2:
+                return (
+                    "[bold cyan]=== In-Workspace Arduino / C++ Firmware Editor ===[/bold cyan]\n"
+                    "  line <N> <code...>           - Edit/replace Line #N\n"
+                    "  line add <code...>           - Append a line of C++ code\n"
+                    "  line insert <N> <code...>    - Insert code before Line #N\n"
+                    "  line del / delete <N>        - Delete Line #N\n"
+                    "  code clear                   - Clear sketch buffer\n"
+                    "  edit menu                    - Select host editor (VS Code, Cursor, Notepad++, Notepad)\n"
+                    "  ide / edit live              - Enter live interactive typing IDE mode"
+                )
+            sub = tokens[1].lower()
+            if sub in ("add", "append"):
+                code_txt = line[line.lower().find(sub) + len(sub):].strip()
+                self.sketch_proj.append_content(code_txt)
+                self.arduino.load_sketch(self.sketch_proj.source_code)
+                return f"[green]Appended line to sketch.[/green] (Total: {len(self.sketch_proj.source_code.splitlines())} lines)"
+            elif sub in ("del", "delete", "remove", "rm"):
+                if len(tokens) < 3 or not tokens[2].isdigit():
+                    raise ValueError("Usage: line del <line_number>")
+                lnum = int(tokens[2])
+                ok = self.sketch_proj.delete_line(lnum)
+                if ok:
+                    self.arduino.load_sketch(self.sketch_proj.source_code)
+                    return f"[green]Deleted Line #{lnum} from sketch.[/green]"
+                return f"[yellow]Line #{lnum} out of range.[/yellow]"
+            elif sub in ("insert", "ins"):
+                if len(tokens) < 4 or not tokens[2].isdigit():
+                    raise ValueError("Usage: line insert <line_number> <code...>")
+                lnum = int(tokens[2])
+                code_txt = " ".join(tokens[3:])
+                self.sketch_proj.insert_line(lnum, code_txt)
+                self.arduino.load_sketch(self.sketch_proj.source_code)
+                return f"[green]Inserted code at Line #{lnum}.[/green]"
+            elif tokens[1].isdigit():
+                lnum = int(tokens[1])
+                code_txt = " ".join(tokens[2:])
+                ok = self.sketch_proj.edit_line(lnum, code_txt)
+                if ok:
+                    self.arduino.load_sketch(self.sketch_proj.source_code)
+                    return f"[green]Updated Line #{lnum}:[/green] {code_txt}"
+                return f"[yellow]Line #{lnum} out of range.[/yellow]"
+
         # 3. Sketch Code Editor & Project Management
-        if first in ("code", "sketch", "project", "edit", "template"):
+        if first in ("code", "sketch", "project", "edit", "editor", "template"):
             if first == "template":
                 ex_name = tokens[1].lower() if len(tokens) > 1 else "blink"
                 return self._load_template(ex_name)
@@ -2326,7 +2533,11 @@ class TerminusEngineBridge:
             if first in ("code", "sketch") and (len(tokens) == 1 or tokens[1].lower() in ("show", "view", "cat")):
                 return self.sketch_proj.view_code()
 
-            sub = tokens[1].lower() if len(tokens) > 1 else ("open" if first == "edit" else "show")
+            sub = tokens[1].lower() if len(tokens) > 1 else ("open" if first in ("edit", "editor") else "show")
+
+            if sub in ("menu", "list", "select", "options", "installed") or (first == "editor" and len(tokens) == 1):
+                from CORE.editor_detector import HostEditorManager
+                return HostEditorManager.format_editor_menu()
 
             if first == "project" and len(tokens) > 1 and sub not in ("new", "create", "open", "save", "list", "files"):
                 # Shorthand: 'project MyProj' -> create project
@@ -2341,26 +2552,29 @@ class TerminusEngineBridge:
                 self.arduino.load_sketch(self.sketch_proj.source_code)
                 return f"[green]Created new project:[/green] [bold]{pname}[/bold] in {self.sketch_proj.get_project_dir()}"
 
-            if sub in ("open", "external", "launch") or first == "edit":
-                # Launch external editor if no extra args
-                if len(tokens) == 1 or (len(tokens) == 2 and sub in ("open", "external")):
-                    ok, msg = self.sketch_proj.launch_external_editor()
-                    return f"[{'green' if ok else 'yellow'}]{msg}[/{'green' if ok else 'yellow'}]"
+            if sub in ("open", "external", "launch") or (first in ("edit", "editor") and len(tokens) == 1):
+                ok, msg = self.sketch_proj.launch_external_editor()
+                return f"[{'green' if ok else 'yellow'}]{msg}[/{'green' if ok else 'yellow'}]"
 
-                if sub in ("set", "paste", "replace"):
-                    new_code = line[line.lower().find(sub) + len(sub):].strip()
-                    self.sketch_proj.set_content(new_code)
-                    self.arduino.load_sketch(self.sketch_proj.source_code)
-                    return f"[green]Updated sketch buffer[/green] ({len(self.sketch_proj.source_code.splitlines())} lines)."
+            if first in ("edit", "editor") and len(tokens) >= 2 and sub not in ("set", "paste", "replace", "append", "clear", "open"):
+                pref_ed = tokens[1]
+                ok, msg = self.sketch_proj.launch_external_editor(preferred_editor=pref_ed)
+                return f"[{'green' if ok else 'yellow'}]{msg}[/{'green' if ok else 'yellow'}]"
 
-                if sub == "append":
-                    append_txt = line[line.lower().find("append") + 6:].strip()
-                    self.sketch_proj.append_content(append_txt)
-                    self.arduino.load_sketch(self.sketch_proj.source_code)
-                    return f"[green]Appended line to sketch buffer[/green] (Total: {len(self.sketch_proj.source_code.splitlines())} lines)."
+            if sub in ("set", "paste", "replace"):
+                new_code = line[line.lower().find(sub) + len(sub):].strip()
+                self.sketch_proj.set_content(new_code)
+                self.arduino.load_sketch(self.sketch_proj.source_code)
+                return f"[green]Updated sketch buffer[/green] ({len(self.sketch_proj.source_code.splitlines())} lines)."
+
+            if sub == "append":
+                append_txt = line[line.lower().find("append") + 6:].strip()
+                self.sketch_proj.append_content(append_txt)
+                self.arduino.load_sketch(self.sketch_proj.source_code)
+                return f"[green]Appended line to sketch buffer[/green] (Total: {len(self.sketch_proj.source_code.splitlines())} lines)."
 
             if sub == "clear":
-                self.sketch_proj.set_content("")
+                self.sketch_proj.clear_code()
                 self.arduino.source_code = ""
                 return "Sketch buffer cleared."
 

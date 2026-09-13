@@ -19,6 +19,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from rich.console import Console
 from UI.app import TerminusApp, TerminusEngineBridge
+from UI.in_window_ide import InWindowIDE
 from CORE.ipc_router import IPCRouter, ipc_router_instance, ipc_client_instance
 from CORE.common_math import split_smart_statements
 
@@ -98,6 +99,11 @@ def prompt_welcome_mode_selection() -> str:
     return mode_map.get(choice, "CIRCUIT")
 
 
+def run_interactive_ide_session(bridge: TerminusEngineBridge) -> str:
+    """Runs interactive line-by-line in-terminal IDE session inside the 60% window."""
+    return InWindowIDE.run(bridge)
+
+
 def run_cli_repl(
     initial_mode: str = None,
     session_id: int = None,
@@ -129,18 +135,36 @@ def run_cli_repl(
         except Exception:
             pass
 
-    status_msg = f"Ready. Operating Mode: {bridge.mode}"
+    # Clear once on startup
+    os.system("cls" if os.name == "nt" else "clear")
 
     while True:
         try:
-            # Clear terminal screen and redraw the full fixed interactive workspace in-place
-            os.system("cls" if os.name == "nt" else "clear")
+            # Flush any stray keystrokes from input buffer
+            if os.name == "nt":
+                try:
+                    import msvcrt
+                    while msvcrt.kbhit():
+                        msvcrt.getwch()
+                except Exception:
+                    pass
+
+            # Make sure terminal is in clean text mode with cursor visible
+            sys.stdout.write("\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[?1015l\033[?25h")
+            sys.stdout.flush()
+
+            # Redraw the full fixed interactive workspace in-place smoothly
+            sys.stdout.write("\033[H")
             workspace_art = bridge.render_split_workspace(status_msg)
             strip_or_render_markup(workspace_art)
 
             sid_prompt = f"#{bridge.ipc_client.session_id} " if bridge.ipc_client.is_connected else ""
             prompt_str = f"Terminus [{bridge.mode}] {sid_prompt}> "
-            line = input(prompt_str).strip()
+            try:
+                line = input(prompt_str).strip()
+            except (KeyboardInterrupt, EOFError):
+                print("\nExiting TerminusECE CLI. Goodbye!")
+                break
 
             if not line:
                 continue
@@ -154,6 +178,17 @@ def run_cli_repl(
                         print(save_out)
                 print("\nExiting TerminusECE CLI. Goodbye!")
                 break
+
+            # Clear screen
+            if line.lower() in ("cls", "clear"):
+                os.system("cls" if os.name == "nt" else "clear")
+                status_msg = "Screen cleared and refreshed."
+                continue
+
+            # Check interactive IDE mode launcher
+            if line.lower() in ("ide", "edit live", "live", "code enter", "edit ide"):
+                status_msg = run_interactive_ide_session(bridge)
+                continue
 
             # Check mode switch
             tokens = line.split()

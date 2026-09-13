@@ -158,6 +158,28 @@ class MatlabProjectManager:
 
         return True, f"Loaded MATLAB project '{self.project_name}' with {len(self.files)} file(s) from {proj_dir}."
 
+    def sync_from_disk(self) -> bool:
+        """Automatically checks for external editor disk modifications and updates memory buffer."""
+        proj_dir = self.get_project_dir()
+        updated = False
+        if not hasattr(self, "_file_mtimes"):
+            self._file_mtimes = {}
+
+        for fname, pfile in list(self.files.items()):
+            fpath = proj_dir / fname
+            if fpath.exists():
+                try:
+                    mtime = fpath.stat().st_mtime
+                    last_mtime = self._file_mtimes.get(fname, 0.0)
+                    if mtime > last_mtime:
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            pfile.content = f.read()
+                        self._file_mtimes[fname] = mtime
+                        updated = True
+                except Exception:
+                    pass
+        return updated
+
     def add_file(self, filename: str, content: str = "") -> None:
         self.files[filename] = MatlabProjectFile(filename=filename, content=content, is_main=False)
 
@@ -167,6 +189,8 @@ class MatlabProjectManager:
             self.files[target] = MatlabProjectFile(filename=target, content=content, is_main=(target == self.active_filename))
         else:
             self.files[target].content = content
+        # Save to disk as well
+        self.save_project()
 
     def append_content(self, line_text: str, filename: Optional[str] = None):
         target = filename or self.active_filename
@@ -174,32 +198,80 @@ class MatlabProjectManager:
             self.set_content(line_text + "\n", target)
         else:
             self.files[target].content += ("\n" if not self.files[target].content.endswith("\n") else "") + line_text + "\n"
+        self.save_project()
 
-    def view_code(self, filename: Optional[str] = None) -> str:
+    def edit_line(self, line_num: int, new_text: str, filename: Optional[str] = None) -> bool:
+        """Edits/replaces a specific line (1-indexed)."""
         target = filename or self.active_filename
         pfile = self.files.get(target)
-        if not pfile or not pfile.content:
-            return f"[yellow]File '{target}' in project '{self.project_name}' is empty.[/yellow]"
+        if not pfile:
+            return False
+        lines = pfile.content.splitlines()
+        if 1 <= line_num <= len(lines):
+            lines[line_num - 1] = new_text
+            pfile.content = "\n".join(lines) + "\n"
+            self.save_project()
+            return True
+        elif line_num == len(lines) + 1:
+            lines.append(new_text)
+            pfile.content = "\n".join(lines) + "\n"
+            self.save_project()
+            return True
+        return False
+
+    def insert_line(self, line_num: int, new_text: str, filename: Optional[str] = None) -> bool:
+        """Inserts a new line at position (1-indexed)."""
+        target = filename or self.active_filename
+        pfile = self.files.get(target)
+        if not pfile:
+            return False
+        lines = pfile.content.splitlines()
+        idx = max(0, min(len(lines), line_num - 1))
+        lines.insert(idx, new_text)
+        pfile.content = "\n".join(lines) + "\n"
+        self.save_project()
+        return True
+
+    def delete_line(self, line_num: int, filename: Optional[str] = None) -> bool:
+        """Deletes a specific line (1-indexed)."""
+        target = filename or self.active_filename
+        pfile = self.files.get(target)
+        if not pfile:
+            return False
+        lines = pfile.content.splitlines()
+        if 1 <= line_num <= len(lines):
+            lines.pop(line_num - 1)
+            pfile.content = "\n".join(lines) + "\n"
+            self.save_project()
+            return True
+        return False
+
+    def clear_code(self, filename: Optional[str] = None) -> None:
+        """Clears script buffer."""
+        target = filename or self.active_filename
+        if target in self.files:
+            self.files[target].content = ""
+            self.save_project()
+
+    def view_code(self, filename: Optional[str] = None, cursor_line: Optional[int] = None, cursor_col: Optional[int] = None) -> str:
+        self.sync_from_disk()
+        target = filename or self.active_filename
+        pfile = self.files.get(target)
+        if not pfile or not pfile.content.strip():
+            return f"% Project: {self.project_name} ({target})\n% (Empty script. Type 'line add <code...>' or 'ide')"
 
         lines = pfile.content.splitlines()
-        header = f"[bold cyan]=== Project: {self.project_name} | File: {target} ({len(lines)} lines) ===[/bold cyan]"
-        formatted = [header]
+        formatted = [f"% Project: {self.project_name} ({target})"]
         for i, l in enumerate(lines, 1):
-            formatted.append(f"  [dim]{i:>4} |[/dim] {l}")
+            cursor_mark = "▶" if cursor_line == i else " "
+            formatted.append(f"{cursor_mark}{i:02d} │ {l}")
         return "\n".join(formatted)
 
-    def launch_external_editor(self, filename: Optional[str] = None) -> Tuple[bool, str]:
+    def launch_external_editor(self, preferred_editor: Optional[str] = None, filename: Optional[str] = None) -> Tuple[bool, str]:
         self.save_project()
         target = filename or self.active_filename
         target_path = self.get_project_dir() / target
 
-        if sys.platform.startswith("win"):
-            editor = os.environ.get("EDITOR", "notepad.exe")
-        else:
-            editor = os.environ.get("EDITOR", "nano")
+        from CORE.editor_detector import HostEditorManager
+        return HostEditorManager.launch(target_path, preferred_editor)
 
-        try:
-            subprocess.Popen([editor, str(target_path)])
-            return True, f"Launched external editor '{editor}' on {target_path}. Re-run 'run' after editing."
-        except Exception as e:
-            return False, f"Could not launch editor '{editor}': {e}"
